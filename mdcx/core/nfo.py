@@ -291,7 +291,7 @@ async def write_nfo(file_info: FileInfo, data: CrawlersResult, nfo_file: Path, o
         # 输出合集(使用系列)
         if NfoInclude.SERIES_SET in nfo_include_new and series:
             print("  <set>", file=code)
-            write_text_element(code, "name", series, indent="    ")
+            write_text_element(code, series, indent="    ")
             print("  </set>", file=code)
 
         # 输出系列
