@@ -284,9 +284,7 @@ async def write_nfo(file_info: FileInfo, data: CrawlersResult, nfo_file: Path, o
         # 输出合集(使用演员)
         if NfoInclude.ACTOR_SET in nfo_include_new:
             for name in data.actors:
-                print("  <set>", file=code)
-                write_text_element(code, "name", name, indent="    ")
-                print("  </set>", file=code)
+                write_text_element(code, "set", name)
 
         # 输出合集(使用系列)
         if NfoInclude.SERIES_SET in nfo_include_new and series:
