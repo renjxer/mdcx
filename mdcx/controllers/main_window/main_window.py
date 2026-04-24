@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import quote_plus
 
-from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QItemSelectionModel, QPoint, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QCursor, QHoverEvent, QIcon, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
@@ -94,6 +94,18 @@ if TYPE_CHECKING:
     from PyQt5.QtGui import QMouseEvent
 
 
+LINK_DIR_INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+WINDOWS_RESERVED_DIR_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+DEFAULT_LINK_DIR_NAME = "unnamed"
+
+
 class MyMAinWindow(QMainWindow):
     # region 信号量
     main_logs_show = pyqtSignal(str)  # 显示刮削日志信号
@@ -102,8 +114,11 @@ class MyMAinWindow(QMainWindow):
     main_req_logs_show = pyqtSignal(str)  # 显示刮削后台日志信号
     net_logs_show = pyqtSignal(str)  # 显示网络检测日志信号
     set_javdb_cookie = pyqtSignal(str)  # 加载javdb cookie文本内容到设置页面
+    set_javdb_status = pyqtSignal(str)  # javdb 检查状态更新
+    set_fc2ppvdb_status = pyqtSignal(str)  # fc2ppvdb 检查状态更新
     set_javbus_cookie = pyqtSignal(str)  # 加载javbus cookie文本内容到设置页面
     set_javbus_status = pyqtSignal(str)  # javbus 检查状态更新
+    exec_save_config = pyqtSignal()  # 主线程执行保存配置
     set_label_file_path = pyqtSignal(str)  # 主界面更新路径信息显示
     set_pic_pixmap = pyqtSignal(list, list)  # 主界面显示封面、缩略图
     set_pic_text = pyqtSignal(str)  # 主界面显示封面信息
@@ -437,6 +452,7 @@ class MyMAinWindow(QMainWindow):
             # pos = QCursor().pos()
         menu = QMenu()
         selected_entries = self._get_selected_entries()
+        selected_entry = selected_entries[0] if len(selected_entries) == 1 else None
         if len(selected_entries) > 1:
             menu.addAction(QAction(f"已选择 {len(selected_entries)} 项", self))
             menu.addSeparator()
@@ -449,7 +465,12 @@ class MyMAinWindow(QMainWindow):
             menu.exec_(self.Ui.page_main.mapToGlobal(pos))
             return
 
-        if self.file_main_open_path:
+        if selected_entry is not None:
+            _, _, _, file_path = selected_entry
+            file_name = split_path(file_path)[1]
+            menu.addAction(QAction(file_name, self))
+            menu.addSeparator()
+        elif self.file_main_open_path:
             file_name = split_path(self.file_main_open_path)[1]
             menu.addAction(QAction(file_name, self))
             menu.addSeparator()
@@ -477,6 +498,13 @@ class MyMAinWindow(QMainWindow):
         menu.exec_(self.Ui.page_main.mapToGlobal(pos))
         # menu.move(pos)
         # menu.show()
+
+    def _tree_result_context_menu(self, pos: QPoint):
+        item = self.Ui.treeWidget_number.itemAt(pos)
+        if item is not None and item.text(0) not in {"成功", "失败"}:
+            self._set_result_item_as_current_selection(item)
+        global_pos = self.Ui.treeWidget_number.viewport().mapToGlobal(pos)
+        self._menu(self.Ui.page_main.mapFromGlobal(global_pos))
 
     # endregion
 
@@ -1008,6 +1036,28 @@ class MyMAinWindow(QMainWindow):
         # self.Ui.treeWidget_number.setCurrentItem(node)
         # self.Ui.treeWidget_number.scrollToItem(node)
 
+    def _get_single_selected_entry(self) -> tuple[QTreeWidgetItem, str, ShowData, Path] | None:
+        selected_entries = self._get_selected_entries()
+        if len(selected_entries) != 1:
+            return None
+        return selected_entries[0]
+
+    def _has_single_selected_result_item(self) -> bool:
+        return self._get_single_selected_entry() is not None
+
+    def _set_result_item_as_current_selection(self, item: QTreeWidgetItem) -> None:
+        if item.text(0) in {"成功", "失败"}:
+            return
+
+        tree = self.Ui.treeWidget_number
+        selected_items = tree.selectedItems()
+        if item not in selected_items:
+            tree.clearSelection()
+            item.setSelected(True)
+        model_index = tree.indexFromItem(item)
+        if model_index.isValid():
+            tree.selectionModel().setCurrentIndex(model_index, QItemSelectionModel.NoUpdate)
+
     def show_list_name(self, status: Literal["succ", "fail"], show_data: ShowData, real_number=""):
         # 添加树状节点
         self._addTreeChild(status, show_data.show_name)
@@ -1015,9 +1065,10 @@ class MyMAinWindow(QMainWindow):
         if not show_data.data.title:
             show_data.data.title = LogBuffer.error().get()
             show_data.data.number = real_number
-        self.show_name = show_data.show_name
-        self.set_main_info(show_data)
         self.json_array[show_data.show_name] = show_data
+        if not self._has_single_selected_result_item():
+            self.show_name = show_data.show_name
+            self.set_main_info(show_data)
 
     def set_main_info(self, show_data: "ShowData | None"):
         if show_data is not None:
@@ -1307,13 +1358,89 @@ class MyMAinWindow(QMainWindow):
         output_dir: Path,
         display_path: Path | None = None,
         group_in_named_dir: bool = False,
-    ) -> Path:
+    ) -> tuple[Path, list[str]]:
         file_name = display_path.name if display_path is not None else source_path.name
         if not group_in_named_dir:
-            return output_dir / file_name
+            return output_dir / file_name, []
 
-        dir_name = Path(file_name).stem or file_name
-        return output_dir / dir_name / file_name
+        raw_dir_name = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
+        raw_dir_name = raw_dir_name or file_name
+        dir_name, dir_notes = self._sanitize_link_dir_name(raw_dir_name)
+        target_dir, collision_note = self._get_available_link_target_dir(output_dir, dir_name, file_name)
+        if collision_note:
+            dir_notes.append(f"链接目录名已自动避让冲突: {dir_name} -> {target_dir.name}")
+        return target_dir / file_name, dir_notes
+
+    def _get_link_dir_name_max(self) -> int:
+        folder_name_max = int(manager.config.folder_name_max)
+        if folder_name_max <= 0 or folder_name_max > 255:
+            return 60
+        return folder_name_max
+
+    def _fit_link_dir_name_length(self, dir_name: str, suffix: str = "") -> str:
+        max_length = self._get_link_dir_name_max()
+        if len(dir_name) + len(suffix) <= max_length:
+            return dir_name + suffix
+
+        base_length = max(max_length - len(suffix), 1)
+        trimmed = dir_name[:base_length].rstrip(". ").rstrip()
+        if not trimmed:
+            trimmed = DEFAULT_LINK_DIR_NAME[:base_length].rstrip(". ").rstrip() or DEFAULT_LINK_DIR_NAME[:1]
+        return trimmed + suffix
+
+    def _is_windows_reserved_dir_name(self, dir_name: str) -> bool:
+        return dir_name.rstrip(". ").upper() in WINDOWS_RESERVED_DIR_NAMES
+
+    def _sanitize_link_dir_name(self, raw_name: str) -> tuple[str, list[str]]:
+        sanitized = LINK_DIR_INVALID_CHARS_RE.sub("_", raw_name)
+        sanitized = re.sub(r"\s+", " ", sanitized)
+        sanitized = re.sub(r"_+", "_", sanitized)
+        sanitized = sanitized.strip().strip(". ").rstrip(". ").strip()
+        notes: list[str] = []
+
+        if not sanitized or not sanitized.strip("._- "):
+            sanitized = DEFAULT_LINK_DIR_NAME
+            notes.append(f"链接目录名清洗后为空，已回退为默认目录名: {raw_name} -> {sanitized}")
+        elif sanitized != raw_name:
+            notes.append(f"链接目录名已清洗: {raw_name} -> {sanitized}")
+
+        if self._is_windows_reserved_dir_name(sanitized):
+            original_name = sanitized
+            sanitized = f"{sanitized}_"
+            notes.append(f"链接目录名命中 Windows 保留名，已自动调整: {original_name} -> {sanitized}")
+
+        fitted_name = self._fit_link_dir_name_length(sanitized)
+        if fitted_name != sanitized:
+            notes.append(f"链接目录名过长，已按最大长度截断: {sanitized} -> {fitted_name}")
+        return fitted_name, notes
+
+    def _can_reuse_link_target_dir(self, target_dir: Path, file_name: str) -> bool:
+        if not target_dir.exists():
+            return True
+        if not target_dir.is_dir():
+            return False
+
+        target_file = target_dir / file_name
+        if target_file.exists() or target_file.is_symlink():
+            return True
+
+        try:
+            return not any(target_dir.iterdir())
+        except Exception:
+            return False
+
+    def _get_available_link_target_dir(self, output_dir: Path, dir_name: str, file_name: str) -> tuple[Path, str]:
+        candidate_dir = output_dir / dir_name
+        if self._can_reuse_link_target_dir(candidate_dir, file_name):
+            return candidate_dir, ""
+
+        suffix_index = 2
+        while True:
+            candidate_name = self._fit_link_dir_name_length(dir_name, f"_{suffix_index}")
+            candidate_dir = output_dir / candidate_name
+            if self._can_reuse_link_target_dir(candidate_dir, file_name):
+                return candidate_dir, candidate_name
+            suffix_index += 1
 
     def _prepare_link_target_dir(self, target_path: Path, group_in_named_dir: bool) -> tuple[bool, str, bool]:
         if not group_in_named_dir:
@@ -1388,7 +1515,11 @@ class MyMAinWindow(QMainWindow):
                 )
                 continue
 
-            target_path = self._build_link_target_path(source_path, output_dir, file_path, group_in_named_dir)
+            target_path, target_notes = self._build_link_target_path(
+                source_path, output_dir, file_path, group_in_named_dir
+            )
+            for note in target_notes:
+                signal_qt.show_log_text(f" ℹ {note}")
             ok, dir_error, created_dir = self._prepare_link_target_dir(target_path, group_in_named_dir)
             if not ok:
                 failure_details.append((target_path, dir_error))
@@ -1512,6 +1643,17 @@ class MyMAinWindow(QMainWindow):
             signal_qt.show_traceback_log(item.text(0) + ": No info!")
 
     def _check_main_file_path(self):
+        selected_entries = self._get_selected_entries()
+        if len(selected_entries) > 1:
+            QMessageBox.about(self, "选择过多", "请只选择一个项目后再使用！！")
+            signal_qt.show_scrape_info(f"💡 请只选择一个项目后再使用！{get_current_time()}")
+            return False
+        if len(selected_entries) == 1:
+            _, show_name, show_data, file_path = selected_entries[0]
+            self.show_name = show_name
+            self.set_main_info(show_data)
+            self.file_main_open_path = file_path
+
         if self.file_main_open_path == Path() or not self.file_main_open_path.is_file():
             QMessageBox.about(self, "没有目标文件", "请刮削后再使用！！")
             signal_qt.show_scrape_info(f"💡 请刮削后使用！{get_current_time()}")
@@ -2922,22 +3064,21 @@ class MyMAinWindow(QMainWindow):
     def pushButton_check_javdb_cookie_clicked(self):
         input_cookie = self.Ui.plainTextEdit_cookie_javdb.toPlainText()
         if not input_cookie:
-            self.Ui.label_javdb_cookie_result.setText("❌ 未填写 Cookie")
+            self.set_javdb_status.emit("❌ 未填写 Cookie")
             self.show_log_text(" ❌ JavDb 未填写 Cookie，可在「设置」-「网络」添加！")
             return
-        self.Ui.label_javdb_cookie_result.setText("⏳ 正在检测中...")
+        self.set_javdb_status.emit("⏳ 正在检测中...")
         try:
-            t = threading.Thread(target=self._check_javdb_cookie)
+            t = threading.Thread(target=self._check_javdb_cookie, args=(input_cookie,))
             t.start()  # 启动线程,即让线程开始执行
         except Exception:
             signal_qt.show_traceback_log(traceback.format_exc())
             signal_qt.show_log_text(traceback.format_exc())
 
-    def _check_javdb_cookie(self):
+    def _check_javdb_cookie(self, input_cookie: str):
         tips = "❌ 未填写 Cookie，影响 FC2 刮削！"
-        input_cookie = self.Ui.plainTextEdit_cookie_javdb.toPlainText()
         if not input_cookie:
-            self.Ui.label_javdb_cookie_result.setText(tips)
+            self.set_javdb_status.emit(tips)
             return tips
         # self.Ui.pushButton_check_javdb_cookie.setEnabled(False)
         tips = "✅ 连接正常！"
@@ -2952,7 +3093,7 @@ class MyMAinWindow(QMainWindow):
                     else:
                         tips = "❌ Cookie 已过期！已清理！(不清理无法访问)"
                         self.set_javdb_cookie.emit("")
-                        self.pushButton_save_config_clicked()
+                        self.exec_save_config.emit()
                 else:
                     tips = f"❌ 连接失败！请检查网络或代理设置！ {response}"
             else:
@@ -2972,7 +3113,7 @@ class MyMAinWindow(QMainWindow):
                             vip_info = "已开通 VIP"
                         if manager.config.javdb != input_cookie:  # 保存cookie
                             tips = f"✅ 连接正常！（{vip_info}）Cookie 已保存！"
-                            self.pushButton_save_config_clicked()
+                            self.exec_save_config.emit()
                         else:
                             tips = f"✅ 连接正常！（{vip_info}）"
                 else:
@@ -2981,12 +3122,12 @@ class MyMAinWindow(QMainWindow):
                     else:
                         tips = "❌ Cookie 无效！已清理！"
                         self.set_javdb_cookie.emit("")
-                        self.pushButton_save_config_clicked()
+                        self.exec_save_config.emit()
         except Exception as e:
             tips = f"❌ 连接失败！请检查网络或代理设置！ {e}"
             signal_qt.show_traceback_log(tips)
         if input_cookie:
-            self.Ui.label_javdb_cookie_result.setText(tips)
+            self.set_javdb_status.emit(tips)
             # self.Ui.pushButton_check_javdb_cookie.setEnabled(True)
         self.show_log_text(tips.replace("❌", " ❌ JavDb").replace("✅", " ✅ JavDb"))
         return tips
@@ -2995,51 +3136,49 @@ class MyMAinWindow(QMainWindow):
     def pushButton_check_fc2ppvdb_cookie_clicked(self):
         input_cookie = self.Ui.plainTextEdit_cookie_fc2ppvdb.toPlainText().strip()
         if not input_cookie:
-            self.Ui.label_fc2ppvdb_cookie_result.setText("❌ 未填写 Cookie")
+            self.set_fc2ppvdb_status.emit("❌ 未填写 Cookie")
             self.show_log_text(" ❌ FC2PPVDB 未填写 Cookie，可在「设置」-「网络」添加！")
             return
-        self.Ui.label_fc2ppvdb_cookie_result.setText("⏳ 正在检测中...")
+        self.set_fc2ppvdb_status.emit("⏳ 正在检测中...")
         try:
-            t = threading.Thread(target=self._check_fc2ppvdb_cookie)
+            t = threading.Thread(target=self._check_fc2ppvdb_cookie, args=(input_cookie,))
             t.start()  # 启动线程,即让线程开始执行
         except Exception:
             signal_qt.show_traceback_log(traceback.format_exc())
             signal_qt.show_log_text(traceback.format_exc())
 
-    def _check_fc2ppvdb_cookie(self):
+    def _check_fc2ppvdb_cookie(self, input_cookie: str):
         tips = "❌ 未填写 Cookie"
-        input_cookie = self.Ui.plainTextEdit_cookie_fc2ppvdb.toPlainText().strip()
         if not input_cookie:
-            self.Ui.label_fc2ppvdb_cookie_result.setText(tips)
+            self.set_fc2ppvdb_status.emit(tips)
             return tips
 
         if "fc2ppvdb_session" not in input_cookie:
             tips = "❌ Cookie 无效！缺少 fc2ppvdb_session"
         elif manager.config.fc2ppvdb != input_cookie:
-            self.pushButton_save_config_clicked()
+            self.exec_save_config.emit()
             tips = "✅ 连接正常，Cookie 已保存！"
         else:
             tips = "✅ 连接正常！"
 
-        self.Ui.label_fc2ppvdb_cookie_result.setText(tips)
+        self.set_fc2ppvdb_status.emit(tips)
         self.show_log_text(tips.replace("❌", " ❌ FC2PPVDB").replace("✅", " ✅ FC2PPVDB"))
         return tips
 
     # javbus cookie
     def pushButton_check_javbus_cookie_clicked(self):
+        input_cookie = self.Ui.plainTextEdit_cookie_javbus.toPlainText()
+        self.set_javbus_status.emit("⏳ 正在检测中...")
         try:
-            t = threading.Thread(target=self._check_javbus_cookie)
+            t = threading.Thread(target=self._check_javbus_cookie, args=(input_cookie,))
             t.start()  # 启动线程,即让线程开始执行
         except Exception:
             signal_qt.show_traceback_log(traceback.format_exc())
             self.show_log_text(traceback.format_exc())
 
-    def _check_javbus_cookie(self):
-        self.set_javbus_status.emit("⏳ 正在检测中...")
-
+    def _check_javbus_cookie(self, input_cookie: str):
         # self.Ui.pushButton_check_javbus_cookie.setEnabled(False)
         tips = "✅ 连接正常！"
-        input_cookie = self.Ui.plainTextEdit_cookie_javbus.toPlainText()
         headers = {"Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7,ja;q=0.6", "cookie": input_cookie}
         javbus_url = manager.config.get_site_url(Website.JAVBUS, "https://javbus.com") + "/FSDSS-660"
 
@@ -3054,7 +3193,7 @@ class MyMAinWindow(QMainWindow):
                 else:
                     tips = "❌ 当前节点需要 Cookie 才能刮削！请填写 Cookie 或更换节点！"
             elif manager.config.javbus != input_cookie:
-                self.pushButton_save_config_clicked()
+                self.exec_save_config.emit()
                 tips = "✅ 连接正常！Cookie 已保存！  "
 
         except Exception as e:

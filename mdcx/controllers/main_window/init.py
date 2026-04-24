@@ -34,6 +34,7 @@ def Init_Ui(self: "MyMAinWindow"):
     self.init_QTreeWidget()  # 初始化树状图
     self.Ui.treeWidget_number.setSelectionMode(QAbstractItemView.ExtendedSelection)  # 支持 Shift/Ctrl 多选结果项
     self.Ui.treeWidget_number.setAllColumnsShowFocus(False)  # 关闭默认焦点框，避免与选中边框叠加
+    self.Ui.treeWidget_number.setContextMenuPolicy(Qt.CustomContextMenu)
     self.Ui.treeWidget_number.setStyleSheet("""
         QTreeWidget {
             outline: 0;
@@ -175,6 +176,7 @@ def Init_Singal(self: "MyMAinWindow"):
     # region 控件点击
     # self.Ui.treeWidget_number.clicked.connect(self.treeWidget_number_clicked)
     self.Ui.treeWidget_number.selectionModel().selectionChanged.connect(self.treeWidget_number_clicked)
+    self.Ui.treeWidget_number.customContextMenuRequested.connect(self._tree_result_context_menu)
     self.Ui.pushButton_close.clicked.connect(self.pushButton_close_clicked)
     self.Ui.pushButton_min.clicked.connect(self.pushButton_min_clicked)
     self.Ui.pushButton_main.clicked.connect(self.pushButton_main_clicked)
@@ -305,8 +307,11 @@ def Init_Singal(self: "MyMAinWindow"):
     self.main_req_logs_show.connect(self.Ui.textBrowser_log_main_2.append)
     self.net_logs_show.connect(self.Ui.textBrowser_net_main.append)
     self.set_javdb_cookie.connect(self.Ui.plainTextEdit_cookie_javdb.setPlainText)
+    self.set_javdb_status.connect(self.Ui.label_javdb_cookie_result.setText)
+    self.set_fc2ppvdb_status.connect(self.Ui.label_fc2ppvdb_cookie_result.setText)
     self.set_javbus_cookie.connect(self.Ui.plainTextEdit_cookie_javbus.setPlainText)
     self.set_javbus_status.connect(self.Ui.label_javbus_cookie_result.setText)
+    self.exec_save_config.connect(self.pushButton_save_config_clicked)
     self.set_pic_pixmap.connect(self.resize_label_and_setpixmap)
     self.set_pic_text.connect(self.Ui.label_poster_size.setText)
     self.change_to_mainpage.connect(self.change_mainpage)

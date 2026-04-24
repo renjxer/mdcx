@@ -1,6 +1,7 @@
 import asyncio
 import html as html_utils
 import json
+import random
 import re
 from collections import defaultdict
 from collections.abc import Sequence
@@ -9,8 +10,6 @@ from typing import override
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from parsel import Selector
-from patchright._impl._api_structures import SetCookieParam
-from patchright.async_api import Browser
 
 from mdcx.base.web import check_url, get_url_content_length, normalize_media_url
 from mdcx.config.enums import DownloadableFile
@@ -108,6 +107,27 @@ class DmmCrawler(GenericBaseCrawler[DMMContext]):
         return deduped
 
     @staticmethod
+    def _normalize_image_urls(urls: Sequence[str]) -> list[str]:
+        seen: set[str] = set()
+        normalized_urls: list[str] = []
+        for url in urls:
+            normalized = DmmCrawler._with_https(normalize_media_url(str(url or "").strip()))
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_urls.append(normalized)
+        return normalized_urls
+
+    @staticmethod
+    def _prefer_dmm_image_url(url: str) -> str:
+        normalized = DmmCrawler._with_https(normalize_media_url(str(url or "").strip()))
+        if not normalized:
+            return ""
+        if "pics.dmm.co.jp" in normalized:
+            return normalized.replace("pics.dmm.co.jp", "awsimgsrc.dmm.co.jp/pics_dig").replace("/adult/", "/")
+        return normalized
+
+    @staticmethod
     def _is_dmm_image_url(url: str) -> bool:
         normalized = str(url or "").strip()
         if normalized.startswith("//"):
@@ -158,6 +178,27 @@ class DmmCrawler(GenericBaseCrawler[DMMContext]):
             ctx.debug(f"{label} 重定向: {normalized} -> {validated_url}")
         return validated_url
 
+    async def _validate_preferred_image_url(self, ctx: DMMContext, image_url: str, *, label: str) -> str:
+        normalized = self._with_https(normalize_media_url(str(image_url or "").strip()))
+        if not normalized:
+            return ""
+
+        preferred = self._prefer_dmm_image_url(normalized)
+        if not self._is_dmm_image_url(preferred):
+            return preferred
+
+        validated = await check_url(preferred)
+        if not validated:
+            ctx.debug(f"{label} 抽检失败，回退全量校验: {preferred}")
+            return ""
+
+        validated_url = self._with_https(normalize_media_url(str(validated).strip()))
+        if preferred != normalized and validated_url == preferred:
+            ctx.debug(f"{label} 高清图命中: {normalized} -> {validated_url}")
+        elif validated_url != preferred:
+            ctx.debug(f"{label} 重定向: {preferred} -> {validated_url}")
+        return validated_url
+
     async def _pick_first_valid_image(self, ctx: DMMContext, image_urls: Sequence[str], *, label: str) -> str:
         candidates = self._dedupe_urls(image_urls)
         for index, image_url in enumerate(candidates):
@@ -171,18 +212,54 @@ class DmmCrawler(GenericBaseCrawler[DMMContext]):
         return ""
 
     async def _sanitize_image_list(self, ctx: DMMContext, image_urls: Sequence[str], *, label: str) -> list[str]:
-        candidates = self._dedupe_urls(image_urls)
+        candidates = self._normalize_image_urls(image_urls)
         if not candidates:
             return []
 
-        results = await asyncio.gather(
+        sample_indexes = list(range(len(candidates)))
+        if len(candidates) > 3:
+            sample_indexes = sorted(random.sample(range(len(candidates)), 3))
+
+        sampled_candidates = [(index, candidates[index]) for index in sample_indexes]
+        sampled_results = await asyncio.gather(
             *[
-                self._validate_image_url(ctx, image_url, label=f"{label}[{index + 1}]")
-                for index, image_url in enumerate(candidates)
+                self._validate_preferred_image_url(ctx, image_url, label=f"{label}[{index + 1}]")
+                for index, image_url in sampled_candidates
             ]
         )
+        validated_by_index = {
+            index: validated for (index, _), validated in zip(sampled_candidates, sampled_results, strict=True)
+        }
+
+        if all(sampled_results):
+            self._log(f"图片[{label}抽检通过]: 随机抽检 {len(sampled_candidates)}/{len(candidates)}，整批升级 AWS")
+            valid_urls: list[str] = []
+            for index, image_url in enumerate(candidates):
+                resolved_url = validated_by_index.get(index) or self._prefer_dmm_image_url(image_url) or image_url
+                if resolved_url not in valid_urls:
+                    valid_urls.append(resolved_url)
+            return valid_urls
+
+        passed_count = sum(1 for image_url in sampled_results if image_url)
+        self._log(f"图片[{label}抽检失败]: 随机抽检 {passed_count}/{len(sampled_candidates)} 通过，回退全量校验")
+
+        remaining_candidates = [
+            (index, image_url) for index, image_url in enumerate(candidates) if not validated_by_index.get(index)
+        ]
+        if remaining_candidates:
+            # 复用抽检结果，避免回退后对同一批图片重复发起校验请求。
+            remaining_results = await asyncio.gather(
+                *[
+                    self._validate_image_url(ctx, image_url, label=f"{label}[{index + 1}]")
+                    for index, image_url in remaining_candidates
+                ]
+            )
+            for (index, _), validated in zip(remaining_candidates, remaining_results, strict=True):
+                validated_by_index[index] = validated
+
         valid_urls: list[str] = []
-        for image_url in results:
+        for index in range(len(candidates)):
+            image_url = validated_by_index.get(index, "")
             if image_url and image_url not in valid_urls:
                 valid_urls.append(image_url)
         if len(valid_urls) != len(candidates):
@@ -302,7 +379,7 @@ class DmmCrawler(GenericBaseCrawler[DMMContext]):
         _, category, variant, data = ranked_candidates[0]
         return category, variant, data
 
-    def __init__(self, client: AsyncWebClient, base_url: str = "", browser: Browser | None = None):
+    def __init__(self, client: AsyncWebClient, base_url: str = "", browser=None):
         super().__init__(client, base_url, browser)
 
     @staticmethod
@@ -385,13 +462,6 @@ class DmmCrawler(GenericBaseCrawler[DMMContext]):
     @override
     def _get_cookies(self, ctx) -> dict[str, str] | None:
         return {"age_check_done": "1"}
-
-    @override
-    def _get_cookies_browser(self, ctx: DMMContext) -> Sequence[SetCookieParam] | None:
-        return [
-            SetCookieParam(name="age_check_done", value="1", domain=".dmm.co.jp", path="/"),
-            SetCookieParam(name="age_check_done", value="1", domain=".dmm.com", path="/"),
-        ]
 
     @override
     async def _generate_search_url(self, ctx) -> list[str] | None:
