@@ -3,9 +3,9 @@ import platform
 import traceback
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QFileDialog
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import QFileDialog
 
 from mdcx.config.enums import (
     CDChar,
@@ -192,6 +192,12 @@ def load_config(self: "MyMAinWindow"):
         self.Ui.lineEdit_website_oumei.setText(",".join([site.value for site in manager.config.website_oumei]))
         # 国产番号刮削网站
         self.Ui.lineEdit_website_guochan.setText(",".join([site.value for site in manager.config.website_guochan]))
+        # 锁定刮削类型
+        _type_labels = ["自动判断", "有码", "无码", "素人", "FC2", "欧美", "国产"]
+        _type_values = ["auto", "youma", "wuma", "suren", "fc2", "oumei", "guochan"]
+        _fixed_value = manager.config.fixed_scraping_type.value
+        _idx = _type_values.index(_fixed_value) if _fixed_value in _type_values else 0
+        self.Ui.comboBox_fixed_scraping_type.setCurrentIndex(_idx)
 
         # 刮削偏好
         scrape_like = manager.config.scrape_like
@@ -1097,10 +1103,10 @@ def load_config(self: "MyMAinWindow"):
         # Qt 对话框设置
         if Switch.QT_DIALOG in switch_on:
             self.Ui.checkBox_dialog_qt.setChecked(True)
-            self.options = QFileDialog.DontUseNativeDialog
+            self.options = QFileDialog.Option.DontUseNativeDialog
         else:
             self.Ui.checkBox_dialog_qt.setChecked(False)
-            self.options = QFileDialog.Options()
+            self.options = QFileDialog.Option(0)
         if IS_WINDOWS:
             self.Ui.checkBox_hide_dock_icon.setEnabled(False)
             self.Ui.checkBox_hide_menu_icon.setEnabled(False)
@@ -1175,7 +1181,7 @@ def load_config(self: "MyMAinWindow"):
             self._windows_auto_adjust()
         except Exception:
             signal_qt.show_traceback_log(traceback.format_exc())
-        self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)  # type: ignore
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)  # type: ignore
         self.activateWindow()
         try:
             # 主界面右上角显示提示信息

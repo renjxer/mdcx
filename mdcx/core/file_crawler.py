@@ -3,11 +3,13 @@ from datetime import date
 from itertools import chain
 from typing import TYPE_CHECKING
 
+from ..config.enums import FixedScrapingType
 from ..config.models import Language, Website
 from ..gen.field_enums import CrawlerResultFields
 from ..manual import ManualConfig
 from ..models.enums import FileMode
 from ..models.flags import Flags
+from ..models.log_buffer import LogBuffer
 from ..models.types import CrawlerInput, CrawlerResponse, CrawlerResult, CrawlersResult, CrawlTask
 from ..number import is_uncensored
 from ..utils.dataclass import update
@@ -19,7 +21,6 @@ if TYPE_CHECKING:
 
 MULTI_LANGUAGE_WEBSITES = [  # 支持多语言, language 参数有意义
     Website.AIRAV_CC,
-    Website.AIRAV,
     Website.IQQTV,
     Website.JAVLIBRARY,
 ]
@@ -326,7 +327,7 @@ class FileScraper:
         title_language = self.config.get_field_config(CrawlerResultFields.TITLE).language
         org_language = title_language
 
-        if website not in ["airav_cc", "iqqtv", "airav", "avsex", "javlibrary", "mdtv", "madouqu", "lulubar"]:
+        if website not in ["airav_cc", "iqqtv", "avsex", "javlibrary", "mdtv", "madouqu", "lulubar"]:
             title_language = Language.JP
 
         elif website == "mdtv":
@@ -337,6 +338,8 @@ class FileScraper:
         web_data = await self._call_crawler(task_input, website)
         web_data_json = web_data.data
         if web_data_json is None:
+            if e := web_data.debug_info.error:
+                LogBuffer.error().write(str(e))
             return None
 
         res = update(CrawlersResult.empty(), web_data_json)
@@ -379,8 +382,22 @@ class FileScraper:
         # ================================================网站规则添加开始================================================
 
         if website is None:  # 从全部网站刮削
+            # =======================================================================锁定刮削类型（跳过自动判断）
+            _fixed = self.config.fixed_scraping_type
+            if _fixed == FixedScrapingType.YOUMA:
+                res = await self._call_crawlers(task_input, self.config.website_youma)
+            elif _fixed == FixedScrapingType.WUMA:
+                res = await self._call_crawlers(task_input, self.config.website_wuma)
+            elif _fixed == FixedScrapingType.SUREN:
+                res = await self._call_crawlers(task_input, self.config.website_suren)
+            elif _fixed == FixedScrapingType.FC2:
+                res = await self._call_crawlers(task_input, self.config.website_fc2)
+            elif _fixed == FixedScrapingType.OUMEI:
+                res = await self._call_crawlers(task_input, self.config.website_oumei)
+            elif _fixed == FixedScrapingType.GUOCHAN:
+                res = await self._call_crawlers(task_input, self.config.website_guochan)
             # =======================================================================先判断是不是国产，避免浪费时间
-            if (
+            elif (
                 mosaic == "国产"
                 or mosaic == "國產"
                 or (re.search(r"([^A-Z]|^)MD[A-Z-]*\d{4,}", file_number) and "MDVR" not in file_number)

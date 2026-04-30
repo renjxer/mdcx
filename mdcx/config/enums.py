@@ -511,6 +511,7 @@ class Website(Enum):
     JAVBUS = "javbus"
     JAVDAY = "javday"
     JAVDB = "javdb"
+    JAVDBAPI = "javdbapi"
     JAVLIBRARY = "javlibrary"
     KIN8 = "kin8"
     LOVE6 = "love6"
@@ -528,6 +529,34 @@ class Website(Enum):
     DAHLIA = "dahlia"
     GETCHU_DMM = "getchu_dmm"
     OFFICIAL = "official"
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        json_schema = super().__get_pydantic_json_schema__(core_schema, handler)
+        try:
+            from mdcx.crawlers import get_registered_crawler_site_values
+
+            registered_sites = get_registered_crawler_site_values()
+        except Exception:
+            registered_sites = []
+        if registered_sites:
+            json_schema["enum"] = registered_sites
+            json_schema["showNames"] = registered_sites
+        return json_schema
+
+
+class FixedScrapingType(Enum):
+    AUTO = "auto"
+    YOUMA = "youma"
+    WUMA = "wuma"
+    SUREN = "suren"
+    FC2 = "fc2"
+    OUMEI = "oumei"
+    GUOCHAN = "guochan"
+
+    @classmethod
+    def names(cls):
+        return ["自动判断", "有码", "无码", "素人", "FC2", "欧美", "国产"]
 
 
 class Language(Enum):

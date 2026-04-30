@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from pydantic import HttpUrl, ValidationError
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 
 from mdcx.config.enums import (
     CDChar,
@@ -14,6 +14,7 @@ from mdcx.config.enums import (
     DownloadableFile,
     EmbyAction,
     FieldRule,
+    FixedScrapingType,
     HDPicSource,
     KeepableFile,
     Language,
@@ -132,9 +133,11 @@ def save_config(self: "MyMAinWindow"):
         manager.config.website_single = Website(website_single_text)
     except ValueError:
         manager.config.website_single = Website.AIRAV_CC  # 默认值
+    if manager.config.website_single == Website.AIRAV:
+        manager.config.website_single = Website.AIRAV_CC
 
     def get_sites(text: str) -> set[Website]:
-        return {Website(site) for site in str_to_list(text, ",")}
+        return {Website(site) for site in str_to_list(text, ",") if site != Website.AIRAV.value}
 
     manager.config.website_youma = get_sites(self.Ui.lineEdit_website_youma.text())
     manager.config.website_wuma = get_sites(self.Ui.lineEdit_website_wuma.text())
@@ -142,6 +145,9 @@ def save_config(self: "MyMAinWindow"):
     manager.config.website_fc2 = get_sites(self.Ui.lineEdit_website_fc2.text())
     manager.config.website_oumei = get_sites(self.Ui.lineEdit_website_oumei.text())
     manager.config.website_guochan = get_sites(self.Ui.lineEdit_website_guochan.text())
+    _type_values = ["auto", "youma", "wuma", "suren", "fc2", "oumei", "guochan"]
+    _fixed_idx = self.Ui.comboBox_fixed_scraping_type.currentIndex()
+    manager.config.fixed_scraping_type = FixedScrapingType(_type_values[_fixed_idx])
 
     manager.config.scrape_like = get_radio_buttons(
         (self.Ui.radioButton_scrape_speed, "speed"), (self.Ui.radioButton_scrape_info, "info"), default="single"
@@ -641,7 +647,7 @@ def save_config(self: "MyMAinWindow"):
     manager.config.retry = self.Ui.horizontalSlider_retry.value()  # 重试次数
 
     site = self.Ui.comboBox_custom_website.currentText()
-    if site in Website:
+    if site in Website and site != Website.AIRAV.value:
         site = Website(site)
         url = self.Ui.lineEdit_site_custom_url.text().strip("/ ")
         if url:
@@ -777,7 +783,7 @@ def save_config(self: "MyMAinWindow"):
         self._windows_auto_adjust()  # 界面自动调整
     except Exception:
         signal_qt.show_traceback_log(traceback.format_exc())
-    self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)  # type: ignore
+    self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)  # type: ignore
     self.activateWindow()
     try:
         self.set_label_file_path.emit(

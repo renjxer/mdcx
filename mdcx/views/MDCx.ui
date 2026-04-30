@@ -6624,7 +6624,7 @@
                       <x>0</x>
                       <y>0</y>
                       <width>760</width>
-                      <height>2200</height>
+                      <height>2470</height>
                     </rect>
                   </property>
                   <widget class="QGroupBox" name="groupBox_80">
@@ -6633,7 +6633,7 @@
                         <x>30</x>
                         <y>290</y>
                         <width>701</width>
-                        <height>591</height>
+                        <height>970</height>
                       </rect>
                     </property>
                     <property name="minimumSize">
@@ -6657,7 +6657,7 @@
                           <x>20</x>
                           <y>30</y>
                           <width>661</width>
-                          <height>687</height>
+                          <height>930</height>
                         </rect>
                       </property>
                       <layout class="QGridLayout" name="gridLayout_36">
@@ -6952,6 +6952,12 @@
                                 <verstretch>0</verstretch>
                               </sizepolicy>
                             </property>
+                            <property name="minimumSize">
+                              <size>
+                                <width>0</width>
+                                <height>84</height>
+                              </size>
+                            </property>
                             <property name="styleSheet">
                               <string notr="true">color: rgb(8, 128, 128);</string>
                             </property>
@@ -6970,6 +6976,12 @@
                                 <horstretch>0</horstretch>
                                 <verstretch>0</verstretch>
                               </sizepolicy>
+                            </property>
+                            <property name="minimumSize">
+                              <size>
+                                <width>0</width>
+                                <height>84</height>
+                              </size>
                             </property>
                             <property name="styleSheet">
                               <string notr="true">color: rgb(8, 128, 128);</string>
@@ -7151,6 +7163,110 @@
                             </property>
                           </widget>
                         </item>
+                        <item row="14" column="1">
+                          <widget class="QComboBox" name="comboBox_fixed_scraping_type">
+                            <property name="sizePolicy">
+                              <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                                <horstretch>0</horstretch>
+                                <verstretch>0</verstretch>
+                              </sizepolicy>
+                            </property>
+                            <property name="minimumSize">
+                              <size>
+                                <width>0</width>
+                                <height>30</height>
+                              </size>
+                            </property>
+                            <property name="toolTip">
+                              <string>选择后跳过自动类型识别，所有番号直接使用指定类型的网站列表刮削。选择「自动判断」恢复默认行为。</string>
+                            </property>
+                            <property name="focusPolicy">
+                              <enum>Qt::NoFocus</enum>
+                            </property>
+                            <item>
+                              <property name="text">
+                                <string>自动判断</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>有码</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>无码</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>素人</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>FC2</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>欧美</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>国产</string>
+                              </property>
+                            </item>
+                          </widget>
+                        </item>
+                        <item row="14" column="0">
+                          <widget class="QLabel" name="label_fixed_scraping_type">
+                            <property name="sizePolicy">
+                              <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                                <horstretch>0</horstretch>
+                                <verstretch>0</verstretch>
+                              </sizepolicy>
+                            </property>
+                            <property name="minimumSize">
+                              <size>
+                                <width>0</width>
+                                <height>30</height>
+                              </size>
+                            </property>
+                            <property name="frameShape">
+                              <enum>QFrame::NoFrame</enum>
+                            </property>
+                            <property name="text">
+                              <string>锁定刮削类型：</string>
+                            </property>
+                            <property name="alignment">
+                              <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="15" column="1">
+                          <widget class="QLabel" name="label_fixed_scraping_type_desc">
+                            <property name="sizePolicy">
+                              <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                                <horstretch>0</horstretch>
+                                <verstretch>0</verstretch>
+                              </sizepolicy>
+                            </property>
+                            <property name="styleSheet">
+                              <string notr="true">color: rgb(8, 128, 128);</string>
+                            </property>
+                            <property name="text">
+                              <string>选择后跳过自动类型识别，所有番号直接使用指定类型的网站列表刮削。</string>
+                            </property>
+                            <property name="wordWrap">
+                              <bool>true</bool>
+                            </property>
+                            <property name="textInteractionFlags">
+                              <set>Qt::NoTextInteraction</set>
+                            </property>
+                          </widget>
+                        </item>
                       </layout>
                     </widget>
                   </widget>
@@ -7158,7 +7274,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>970</y>
+                        <y>1340</y>
                         <width>701</width>
                         <height>1000</height>
                       </rect>
@@ -8392,11 +8508,6 @@
                             </item>
                             <item>
                               <property name="text">
-                                <string>airav</string>
-                              </property>
-                            </item>
-                            <item>
-                              <property name="text">
                                 <string>avsex</string>
                               </property>
                             </item>
@@ -8522,6 +8633,11 @@
                             </item>
                             <item>
                               <property name="text">
+                                <string>fc2ppvdb</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
                                 <string>cableav</string>
                               </property>
                             </item>
@@ -8568,6 +8684,11 @@
                             <item>
                               <property name="text">
                                 <string>missav</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>javdbapi</string>
                               </property>
                             </item>
                           </widget>
@@ -8639,7 +8760,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>910</y>
+                        <y>1289</y>
                         <width>701</width>
                         <height>41</height>
                       </rect>
@@ -11609,7 +11730,7 @@
                       </property>
                       <property name="text">
                         <string>&lt;p
-                          style='line-height:20px'&gt;指马赛克有损去除版本，当视频文件路径中含有「-uncensored.」、「破解」、「克破」、「UMR.」等字样时，该文件识别为无码破解版本。&lt;br&gt;
+                          style='line-height:20px'&gt;指马赛克有损去除版本，当视频文件路径中含有「-uncensored.」、「.restored」、「破解」、「克破」、「UMR.」等字样时，该文件识别为无码破解版本。&lt;br&gt;
                           在重命名文件名及目录名时，在番号后显示该字符表示为无码破解版本&lt;/p&gt;</string>
                       </property>
                       <property name="alignment">
@@ -21150,10 +21271,22 @@
                               <bool>true</bool>
                             </property>
                             <property name="sizePolicy">
-                              <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                              <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
                                 <horstretch>0</horstretch>
                                 <verstretch>0</verstretch>
                               </sizepolicy>
+                            </property>
+                            <property name="minimumSize">
+                              <size>
+                                <width>0</width>
+                                <height>30</height>
+                              </size>
+                            </property>
+                            <property name="maximumSize">
+                              <size>
+                                <width>16777215</width>
+                                <height>30</height>
+                              </size>
                             </property>
                             <property name="maxVisibleItems">
                               <number>20</number>

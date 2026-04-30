@@ -10,10 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import quote_plus
 
-from PyQt5.QtCore import QEvent, QItemSelectionModel, QPoint, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QCursor, QHoverEvent, QIcon, QKeySequence
-from PyQt5.QtWidgets import (
-    QAction,
+from PyQt6.QtCore import QEvent, QItemSelectionModel, QPoint, QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QCursor, QGuiApplication, QHoverEvent, QIcon, QKeySequence, QShortcut
+from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFileDialog,
@@ -26,7 +25,6 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QShortcut,
     QSizePolicy,
     QSystemTrayIcon,
     QTreeWidgetItem,
@@ -88,10 +86,10 @@ from .handlers import show_netstatus
 from .init import Init_QSystemTrayIcon, Init_Singal, Init_Ui, init_QTreeWidget
 from .load_config import load_config
 from .save_config import save_config
-from .style import set_dark_style, set_style
+from .style import apply_application_palette, build_menu_style, set_dark_style, set_style
 
 if TYPE_CHECKING:
-    from PyQt5.QtGui import QMouseEvent
+    from PyQt6.QtGui import QMouseEvent
 
 
 LINK_DIR_INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
@@ -149,7 +147,7 @@ class MyMAinWindow(QMainWindow):
         self.show_data: ShowData | None = None  # 当前树状图选中文件的数据
         self.img_path = None  # 当前树状图选中文件的图片地址
         self.m_drag = False  # 允许鼠标拖动的标识
-        self.m_DragPosition: QPoint  # 鼠标拖动位置
+        self.m_DragPosition: QPoint | None = None  # 鼠标拖动位置
         self.logs_counts = 0  # 日志次数（每1w次清屏）
         self.req_logs_counts = 0  # 日志次数（每1w次清屏）
         self.main_log_queue: deque[str] = deque()
@@ -188,7 +186,7 @@ class MyMAinWindow(QMainWindow):
         self.now_show_name = None
         self.show_name = None
         self.t_net = None
-        self.options: QFileDialog.Options | QFileDialog.Option
+        self.options: QFileDialog.Option
         self.tray_icon: QSystemTrayIcon
         self.item_succ: QTreeWidgetItem
         self.item_fail: QTreeWidgetItem
@@ -198,6 +196,7 @@ class MyMAinWindow(QMainWindow):
         resources.get_fonts()
         self.Ui = Ui_MDCx()  # 实例化 Ui
         self.Ui.setupUi(self)  # 初始化 Ui
+        self._bind_system_theme_refresh()
         self._setup_fc2ppvdb_cookie_ui()
         self._setup_baidu_translate_ui()
         self.cutwindow = CutWindow(self)
@@ -217,7 +216,7 @@ class MyMAinWindow(QMainWindow):
             "mdtv、madouqu、7mmtv、faleno、dahlia、prestige、theporndb、cnmdb、fantastica、kin8、avbase\n "
             "非日本代理：javdb、airav-cc、avsex（日本代理会报错）\n "
             "日本代理：seesaawiki、mgstage\n "
-            "无需代理：avsex、hdouban、iqqtv、airav-wiki、love6、lulubar、fc2、fc2club、fc2hub\n\n"
+            "无需代理：avsex、hdouban、iqqtv、love6、lulubar、fc2、fc2club、fc2hub\n\n"
             "Cloudflare Bypass：在【设置】-【网络】-【CF Bypass】填写本地服务地址后生效，"
             "例如 http://127.0.0.1:8000。\n\n"
             "▶️ 点击右上角 【开始检测】按钮以测试网络连通性。"
@@ -261,21 +260,23 @@ class MyMAinWindow(QMainWindow):
         self.Ui.label_7.setGeometry(60, 600, 71, 21)
 
         self.Ui.label_fc2ppvdb_cookie = QLabel(self.Ui.gridLayoutWidget_10)
-        sizePolicy = QSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        sizePolicy = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.Ui.label_fc2ppvdb_cookie.sizePolicy().hasHeightForWidth())
         self.Ui.label_fc2ppvdb_cookie.setSizePolicy(sizePolicy)
         self.Ui.label_fc2ppvdb_cookie.setMinimumSize(130, 30)
         self.Ui.label_fc2ppvdb_cookie.setMaximumSize(130, 16777215)
-        self.Ui.label_fc2ppvdb_cookie.setLayoutDirection(Qt.RightToLeft)
-        self.Ui.label_fc2ppvdb_cookie.setAlignment(Qt.AlignRight | Qt.AlignTrailing | Qt.AlignVCenter)
+        self.Ui.label_fc2ppvdb_cookie.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.Ui.label_fc2ppvdb_cookie.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTrailing | Qt.AlignmentFlag.AlignVCenter
+        )
         self.Ui.label_fc2ppvdb_cookie.setText("fc2ppvdb：\n（登录状态）")
         self.Ui.label_fc2ppvdb_cookie.setObjectName("label_fc2ppvdb_cookie")
         self.Ui.gridLayout_10.addWidget(self.Ui.label_fc2ppvdb_cookie, 4, 0, 1, 1)
 
         self.Ui.plainTextEdit_cookie_fc2ppvdb = QPlainTextEdit(self.Ui.gridLayoutWidget_10)
-        sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        sizePolicy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.Ui.plainTextEdit_cookie_fc2ppvdb.sizePolicy().hasHeightForWidth())
@@ -293,7 +294,7 @@ class MyMAinWindow(QMainWindow):
         self.Ui.horizontalLayout_fc2ppvdb_cookie = QHBoxLayout()
         self.Ui.horizontalLayout_fc2ppvdb_cookie.setObjectName("horizontalLayout_fc2ppvdb_cookie")
         self.Ui.pushButton_check_fc2ppvdb_cookie = QPushButton(self.Ui.gridLayoutWidget_10)
-        sizePolicy = QSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        sizePolicy = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.Ui.pushButton_check_fc2ppvdb_cookie.sizePolicy().hasHeightForWidth())
@@ -303,15 +304,17 @@ class MyMAinWindow(QMainWindow):
         self.Ui.horizontalLayout_fc2ppvdb_cookie.addWidget(self.Ui.pushButton_check_fc2ppvdb_cookie)
 
         self.Ui.label_fc2ppvdb_cookie_result = QLabel(self.Ui.gridLayoutWidget_10)
-        sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        sizePolicy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.Ui.label_fc2ppvdb_cookie_result.sizePolicy().hasHeightForWidth())
         self.Ui.label_fc2ppvdb_cookie_result.setSizePolicy(sizePolicy)
         self.Ui.label_fc2ppvdb_cookie_result.setMinimumSize(0, 0)
-        self.Ui.label_fc2ppvdb_cookie_result.setLayoutDirection(Qt.RightToLeft)
+        self.Ui.label_fc2ppvdb_cookie_result.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.Ui.label_fc2ppvdb_cookie_result.setText("")
-        self.Ui.label_fc2ppvdb_cookie_result.setAlignment(Qt.AlignLeading | Qt.AlignLeft | Qt.AlignVCenter)
+        self.Ui.label_fc2ppvdb_cookie_result.setAlignment(
+            Qt.AlignmentFlag.AlignLeading | Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         self.Ui.label_fc2ppvdb_cookie_result.setObjectName("label_fc2ppvdb_cookie_result")
         self.Ui.horizontalLayout_fc2ppvdb_cookie.addWidget(self.Ui.label_fc2ppvdb_cookie_result)
         self.Ui.gridLayout_10.addLayout(self.Ui.horizontalLayout_fc2ppvdb_cookie, 5, 1, 1, 1)
@@ -443,7 +446,7 @@ class MyMAinWindow(QMainWindow):
         QShortcut(QKeySequence(self.tr("Ctrl+M")), self, self.pushButton_min_clicked2)
         QShortcut(QKeySequence(self.tr("Ctrl+W")), self, self.ready_to_exit)
 
-        self.Ui.page_main.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.Ui.page_main.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.Ui.page_main.customContextMenuRequested.connect(self._menu)
 
     def _menu(self, pos=None):
@@ -451,6 +454,7 @@ class MyMAinWindow(QMainWindow):
             pos = self.Ui.pushButton_right_menu.pos() + QPoint(40, 10)
             # pos = QCursor().pos()
         menu = QMenu()
+        menu.setStyleSheet(build_menu_style(self.dark_mode))
         selected_entries = self._get_selected_entries()
         selected_entry = selected_entries[0] if len(selected_entries) == 1 else None
         if len(selected_entries) > 1:
@@ -462,7 +466,7 @@ class MyMAinWindow(QMainWindow):
             menu.addAction(self.menu_make_symlink_in_dir)
             menu.addAction(self.menu_make_hardlink)
             menu.addAction(self.menu_make_hardlink_in_dir)
-            menu.exec_(self.Ui.page_main.mapToGlobal(pos))
+            menu.exec(self.Ui.page_main.mapToGlobal(pos))
             return
 
         if selected_entry is not None:
@@ -495,7 +499,7 @@ class MyMAinWindow(QMainWindow):
         menu.addAction(self.menu_nfo)
         menu.addAction(self.menu_play)
         menu.addAction(self.menu_hide)
-        menu.exec_(self.Ui.page_main.mapToGlobal(pos))
+        menu.exec(self.Ui.page_main.mapToGlobal(pos))
         # menu.move(pos)
         # menu.show()
 
@@ -541,11 +545,13 @@ class MyMAinWindow(QMainWindow):
                 a1 = cast("QMouseEvent", a1)
                 if a1.button() == Qt.MouseButton.LeftButton:
                     self.start_click_time = time.time()
-                    self.start_click_pos = a1.globalPos()
+                    self.start_click_pos = a1.globalPosition().toPoint()
             elif a1.type() == QEvent.Type.MouseButtonRelease:
                 a1 = cast("QMouseEvent", a1)
                 if a1.button() == Qt.MouseButton.LeftButton:
-                    if not bool(a1.globalPos() - self.start_click_pos) or (time.time() - self.start_click_time < 0.05):
+                    if not bool(a1.globalPosition().toPoint() - self.start_click_pos) or (
+                        time.time() - self.start_click_time < 0.05
+                    ):
                         self._pic_main_clicked()
         if a0 is self.Ui.textBrowser_log_main.viewport() or a0 is self.Ui.textBrowser_log_main_2.viewport():
             if not self.Ui.textBrowser_log_main_3.isHidden() and a1.type() == QEvent.Type.MouseButtonPress:
@@ -589,7 +595,7 @@ class MyMAinWindow(QMainWindow):
                 self.window_border = 1
             else:
                 self.window_border = 0
-            self.setWindowFlag(Qt.FramelessWindowHint, True)  # 隐藏标题栏
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)  # 隐藏标题栏
             self.Ui.pushButton_close.setVisible(True)
             self.Ui.pushButton_min.setVisible(True)
             self.Ui.widget_buttons.move(0, 50)
@@ -600,7 +606,7 @@ class MyMAinWindow(QMainWindow):
             self.window_radius = 0
             self.window_border = 0
             self.window_marjin = 0
-            self.setWindowFlag(Qt.FramelessWindowHint, False)  # 显示标题栏
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint, False)  # 显示标题栏
             self.Ui.pushButton_close.setVisible(False)
             self.Ui.pushButton_min.setVisible(False)
             self.Ui.widget_buttons.move(0, 20)
@@ -636,25 +642,38 @@ class MyMAinWindow(QMainWindow):
 
     def set_dark_style(self): ...
 
+    def _bind_system_theme_refresh(self) -> None:
+        try:
+            QGuiApplication.styleHints().colorSchemeChanged.connect(
+                lambda *_args: apply_application_palette(self.dark_mode)
+            )
+        except Exception:
+            pass
+
     # region 拖动窗口
     # 按下鼠标
     def mousePressEvent(self, a0):
         if a0 and a0.button() == Qt.MouseButton.LeftButton:
             self.m_drag = True
-            self.m_DragPosition = a0.globalPos() - self.pos()
+            self.m_DragPosition = a0.globalPosition().toPoint() - self.pos()
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))  # 按下左键改变鼠标指针样式为手掌
 
     # 松开鼠标
     def mouseReleaseEvent(self, a0):
         if a0 and a0.button() == Qt.MouseButton.LeftButton:
             self.m_drag = False
+            self.m_DragPosition = None
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))  # 释放左键改变鼠标指针样式为箭头
 
     # 拖动鼠标
     def mouseMoveEvent(self, a0):
-        if a0 and self.m_drag:
-            self.move(a0.globalPos() - self.m_DragPosition)
+        if a0 and self.m_drag and self.m_DragPosition is not None and a0.buttons() & Qt.MouseButton.LeftButton:
+            self.move(a0.globalPosition().toPoint() - self.m_DragPosition)
             a0.accept()
+        else:
+            self.m_drag = False
+            self.m_DragPosition = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
     # endregion
 
@@ -675,13 +694,13 @@ class MyMAinWindow(QMainWindow):
 
             # print(self.window().isActiveWindow()) # 是否为活动窗口
             self.raise_()
-            box = QMessageBox(QMessageBox.Warning, "退出", "确定要退出吗？")
-            box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            box.button(QMessageBox.Yes).setText("退出 MDCx")
-            box.button(QMessageBox.No).setText("取消")
-            box.setDefaultButton(QMessageBox.No)
+            box = QMessageBox(QMessageBox.Icon.Warning, "退出", "确定要退出吗？")
+            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.button(QMessageBox.StandardButton.Yes).setText("退出 MDCx")
+            box.button(QMessageBox.StandardButton.No).setText("取消")
+            box.setDefaultButton(QMessageBox.StandardButton.No)
             reply = box.exec()
-            if reply != QMessageBox.Yes:
+            if reply != QMessageBox.StandardButton.Yes:
                 self.raise_()
                 self.show()
                 return
@@ -723,7 +742,7 @@ class MyMAinWindow(QMainWindow):
         if not IS_WINDOWS:
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint, False)  # 不隐藏边框
 
-        # self.setWindowState(Qt.WindowMinimized)
+        # self.setWindowState(Qt.WindowState.WindowMinimized)
         # self.show_traceback_log(self.isMinimized())
         self.showMinimized()
 
@@ -799,7 +818,7 @@ class MyMAinWindow(QMainWindow):
             if int(self.localversion) < int(latest_version):
                 self.new_version = f"\n🍉 有新版本了！（{latest_version}）"
                 signal_qt.show_scrape_info()
-                self.Ui.label_show_version.setCursor(Qt.OpenHandCursor)  # 设置鼠标形状为十字形
+                self.Ui.label_show_version.setCursor(Qt.CursorShape.OpenHandCursor)  # 设置鼠标形状为十字形
                 version_info = f'基于 MDC-GUI 修改 · 当前版本: {self.localversion} （ <font color="red" >最新版本是: {latest_version}，请及时更新！🚀 </font>）'
                 download_link = f' ⬇️ <a href="{GITHUB_RELEASES_URL}">下载新版本</a>'
             else:
@@ -847,7 +866,7 @@ class MyMAinWindow(QMainWindow):
     # 点左侧的日志按钮
     def pushButton_show_log_clicked(self):
         self.Ui.left_backgroud_widget.setStyleSheet(
-            f"background: #EFFFFC;border-right: 1px solid #EDEDED;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
+            f"background: #F5F7FF;border-right: 1px solid #E1E7FF;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
         )
         self.Ui.stackedWidget.setCurrentIndex(1)
         self.set_left_button_style()
@@ -858,7 +877,7 @@ class MyMAinWindow(QMainWindow):
     # 点左侧的工具按钮
     def pushButton_tool_clicked(self):
         self.Ui.left_backgroud_widget.setStyleSheet(
-            f"background: #FFEFF6;border-right: 1px solid #EDEDED;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
+            f"background: #F5F7FF;border-right: 1px solid #E1E7FF;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
         )
         self.Ui.stackedWidget.setCurrentIndex(3)
         self.set_left_button_style()
@@ -867,7 +886,7 @@ class MyMAinWindow(QMainWindow):
     # 点左侧的设置按钮
     def pushButton_setting_clicked(self):
         self.Ui.left_backgroud_widget.setStyleSheet(
-            f"background: #84CE9A;border-right: 1px solid #EDEDED;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
+            f"background: #EEF3FF;border-right: 1px solid #D8E2FF;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
         )
         self.Ui.stackedWidget.setCurrentIndex(4)
         self.set_left_button_style()
@@ -883,7 +902,7 @@ class MyMAinWindow(QMainWindow):
     # 点击左侧【检测网络】按钮，切换到检测网络页面
     def pushButton_show_net_clicked(self):
         self.Ui.left_backgroud_widget.setStyleSheet(
-            f"background: #E1F2FF;border-right: 1px solid #EDEDED;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
+            f"background: #F5F7FF;border-right: 1px solid #E1E7FF;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
         )
         self.Ui.stackedWidget.setCurrentIndex(2)
         self.set_left_button_style()
@@ -892,7 +911,7 @@ class MyMAinWindow(QMainWindow):
     # 点左侧的关于按钮
     def pushButton_about_clicked(self):
         self.Ui.left_backgroud_widget.setStyleSheet(
-            f"background: #FFEFEF;border-right: 1px solid #EDEDED;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
+            f"background: #F5F7FF;border-right: 1px solid #E1E7FF;border-top-left-radius: {self.window_radius}px;border-bottom-left-radius: {self.window_radius}px;"
         )
         self.Ui.stackedWidget.setCurrentIndex(5)
         self.set_left_button_style()
@@ -912,13 +931,13 @@ class MyMAinWindow(QMainWindow):
     # 停止确认弹窗
     def pushButton_stop_scrape_clicked(self):
         if Switch.SHOW_DIALOG_STOP_SCRAPE in manager.config.switch_on:
-            box = QMessageBox(QMessageBox.Warning, "停止刮削", "确定要停止刮削吗？")
-            box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            box.button(QMessageBox.Yes).setText("停止刮削")
-            box.button(QMessageBox.No).setText("取消")
-            box.setDefaultButton(QMessageBox.No)
+            box = QMessageBox(QMessageBox.Icon.Warning, "停止刮削", "确定要停止刮削吗？")
+            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.button(QMessageBox.StandardButton.Yes).setText("停止刮削")
+            box.button(QMessageBox.StandardButton.No).setText("取消")
+            box.setDefaultButton(QMessageBox.StandardButton.No)
             reply = box.exec()
-            if reply != QMessageBox.Yes:
+            if reply != QMessageBox.StandardButton.Yes:
                 return
         if self.Ui.pushButton_start_cap.text() == "■ 停止":
             Flags.stop_requested = True
@@ -1056,7 +1075,7 @@ class MyMAinWindow(QMainWindow):
             item.setSelected(True)
         model_index = tree.indexFromItem(item)
         if model_index.isValid():
-            tree.selectionModel().setCurrentIndex(model_index, QItemSelectionModel.NoUpdate)
+            tree.selectionModel().setCurrentIndex(model_index, QItemSelectionModel.SelectionFlag.NoUpdate)
 
     def show_list_name(self, status: Literal["succ", "fail"], show_data: ShowData, real_number=""):
         # 添加树状节点
@@ -1293,14 +1312,14 @@ class MyMAinWindow(QMainWindow):
             detail_lines.append(f"... 其余 {len(failure_details) - detail_limit} 条请查看日志")
         detail_text = "\n\n".join(detail_lines)
 
-        box = QMessageBox(QMessageBox.Warning, f"{action_name}结果", f"{action_name}完成")
+        box = QMessageBox(QMessageBox.Icon.Warning, f"{action_name}结果", f"{action_name}完成")
         box.setInformativeText(
             f"{self._build_action_result_text(success_count, len(failure_details), skipped_count)}\n\n"
             f"{'\n'.join(preview_lines)}"
         )
         box.setDetailedText(detail_text)
-        view_log_button = box.addButton("查看日志", QMessageBox.ActionRole)
-        box.addButton("确定", QMessageBox.AcceptRole)
+        view_log_button = box.addButton("查看日志", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
         self._bind_localized_message_box_detail_buttons(box)
         box.exec()
 
@@ -1337,20 +1356,22 @@ class MyMAinWindow(QMainWindow):
 
     def _confirm_record_link_paths(self, link_name: str) -> bool | None:
         box = QMessageBox(
-            QMessageBox.Question,
+            QMessageBox.Icon.Question,
             f"创建{link_name}",
             f"是否将本次成功创建的{link_name}路径写入程序的刮削成功列表？",
         )
         box.setInformativeText("已存在的同源链接会自动去重；取消则中止本次创建。")
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
-        box.button(QMessageBox.Yes).setText("写入并继续")
-        box.button(QMessageBox.No).setText("仅创建")
-        box.button(QMessageBox.Cancel).setText("取消")
-        box.setDefaultButton(QMessageBox.Yes)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+        )
+        box.button(QMessageBox.StandardButton.Yes).setText("写入并继续")
+        box.button(QMessageBox.StandardButton.No).setText("仅创建")
+        box.button(QMessageBox.StandardButton.Cancel).setText("取消")
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
         reply = box.exec()
-        if reply == QMessageBox.Cancel:
+        if reply == QMessageBox.StandardButton.Cancel:
             return None
-        return reply == QMessageBox.Yes
+        return reply == QMessageBox.StandardButton.Yes
 
     def _build_link_target_path(
         self,
@@ -1666,7 +1687,7 @@ class MyMAinWindow(QMainWindow):
         """
         # 发送hover事件，清除hover状态（因为弹窗后，失去焦点，状态不会变化）
         self.Ui.pushButton_play.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, False)
-        event = QHoverEvent(QEvent.Type.HoverLeave, QPoint(40, 40), QPoint(0, 0))
+        event = QHoverEvent(QEvent.Type.HoverLeave, QPointF(40, 40), QPointF(0, 0))
         QApplication.sendEvent(self.Ui.pushButton_play, event)
         if self._check_main_file_path():
             # mac需要改为无焦点状态，不然弹窗失去焦点后，再切换回来会有找不到焦点的问题（windows无此问题）
@@ -1682,7 +1703,7 @@ class MyMAinWindow(QMainWindow):
         主界面点打开文件夹
         """
         self.Ui.pushButton_open_folder.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, False)
-        event = QHoverEvent(QEvent.Type.HoverLeave, QPoint(40, 40), QPoint(0, 0))
+        event = QHoverEvent(QEvent.Type.HoverLeave, QPointF(40, 40), QPointF(0, 0))
         QApplication.sendEvent(self.Ui.pushButton_open_folder, event)
         if self._check_main_file_path():
             # mac需要改为无焦点状态，不然弹窗失去焦点后，再切换回来会有找不到焦点的问题（windows无此问题）
@@ -1698,7 +1719,7 @@ class MyMAinWindow(QMainWindow):
         主界面点打开nfo
         """
         self.Ui.pushButton_open_nfo.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, False)
-        event = QHoverEvent(QEvent.Type.HoverLeave, QPoint(40, 40), QPoint(0, 0))
+        event = QHoverEvent(QEvent.Type.HoverLeave, QPointF(40, 40), QPointF(0, 0))
         QApplication.sendEvent(self.Ui.pushButton_open_nfo, event)
         if self._check_main_file_path():
             self.Ui.widget_nfo.show()
@@ -1709,8 +1730,8 @@ class MyMAinWindow(QMainWindow):
         主界面点打开右键菜单
         """
         # 发送hover事件，清除hover状态（因为弹窗后，失去焦点，状态不会变化）
-        self.Ui.pushButton_right_menu.setAttribute(Qt.WA_UnderMouse, False)
-        event = QHoverEvent(QEvent.Type.HoverLeave, QPoint(40, 40), QPoint(0, 0))
+        self.Ui.pushButton_right_menu.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, False)
+        event = QHoverEvent(QEvent.Type.HoverLeave, QPointF(40, 40), QPointF(0, 0))
         QApplication.sendEvent(self.Ui.pushButton_right_menu, event)
         self._menu()
 
@@ -1741,7 +1762,7 @@ class MyMAinWindow(QMainWindow):
             text, ok = QInputDialog.getText(
                 self,
                 "输入网址重新刮削",
-                f"文件名: {main_file_name}\n支持网站:airav_cc、airav、avsex、avsox、dmm、getchu、fc2"
+                f"文件名: {main_file_name}\n支持网站:airav_cc、avsex、avsox、dmm、getchu、fc2"
                 f"、fc2club、fc2hub、iqqtv、jav321、javbus、javdb、freejavbt、javlibrary、mdtv"
                 f"、madouqu、mgstage、7mmtv、xcity、mywife、giga、faleno、dahlia、fantastica、avbase"
                 f"、prestige、hdouban、lulubar、love6、cnmdb、theporndb、kin8\n请输入番号对应的网址（不是网站首页地址！！！是番号页面地址！！！）:",
@@ -1779,13 +1800,13 @@ class MyMAinWindow(QMainWindow):
                 f"将要删除 {len(file_paths)} 个文件：\n{self._build_delete_preview(file_paths)}\n\n你确定要继续吗？"
             )
 
-        box = QMessageBox(QMessageBox.Warning, "删除文件", box_text)
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("删除文件")
-        box.button(QMessageBox.No).setText("取消")
-        box.setDefaultButton(QMessageBox.No)
+        box = QMessageBox(QMessageBox.Icon.Warning, "删除文件", box_text)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText("删除文件")
+        box.button(QMessageBox.StandardButton.No).setText("取消")
+        box.setDefaultButton(QMessageBox.StandardButton.No)
         reply = box.exec()
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
 
         signal_qt.show_log_text(" 🗑 开始删除文件")
@@ -1850,13 +1871,13 @@ class MyMAinWindow(QMainWindow):
                 f"{self._build_delete_preview(folder_paths)}\n\n你确定要继续吗？"
             )
 
-        box = QMessageBox(QMessageBox.Warning, "删除文件", box_text)
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("删除文件和文件夹")
-        box.button(QMessageBox.No).setText("取消")
-        box.setDefaultButton(QMessageBox.No)
+        box = QMessageBox(QMessageBox.Icon.Warning, "删除文件", box_text)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText("删除文件和文件夹")
+        box.button(QMessageBox.StandardButton.No).setText("取消")
+        box.setDefaultButton(QMessageBox.StandardButton.No)
         reply = box.exec()
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
 
         signal_qt.show_log_text(" 🗑 开始删除文件夹")
@@ -2038,13 +2059,13 @@ class MyMAinWindow(QMainWindow):
 
     # region 获取/保存成功刮削列表
     def pushButton_success_list_save_clicked(self):
-        box = QMessageBox(QMessageBox.Warning, "保存成功列表", "确定要将当前列表保存为已刮削成功文件列表吗？")
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("保存")
-        box.button(QMessageBox.No).setText("取消")
-        box.setDefaultButton(QMessageBox.No)
+        box = QMessageBox(QMessageBox.Icon.Warning, "保存成功列表", "确定要将当前列表保存为已刮削成功文件列表吗？")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText("保存")
+        box.button(QMessageBox.StandardButton.No).setText("取消")
+        box.setDefaultButton(QMessageBox.StandardButton.No)
         reply = box.exec()
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             success_text = self.Ui.textBrowser_show_success_list.toPlainText().replace("暂无成功刮削的文件", "").strip()
             Flags.success_list = {
                 p for path in success_text.splitlines() if (line := path.strip()) and (p := Path(line)).suffix
@@ -2054,13 +2075,13 @@ class MyMAinWindow(QMainWindow):
             self.Ui.widget_show_success.hide()
 
     def pushButton_success_list_clear_clicked(self):
-        box = QMessageBox(QMessageBox.Warning, "清空成功列表", "确定要清空当前已刮削成功文件列表吗？")
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("清空")
-        box.button(QMessageBox.No).setText("取消")
-        box.setDefaultButton(QMessageBox.No)
+        box = QMessageBox(QMessageBox.Icon.Warning, "清空成功列表", "确定要清空当前已刮削成功文件列表吗？")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText("清空")
+        box.button(QMessageBox.StandardButton.No).setText("取消")
+        box.setDefaultButton(QMessageBox.StandardButton.No)
         reply = box.exec()
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             Flags.success_list.clear()
             executor.run(save_success_list())
             self.Ui.widget_show_success.hide()
@@ -2340,13 +2361,13 @@ class MyMAinWindow(QMainWindow):
 
     # 工具-视频移动
     def pushButton_move_mp4_clicked(self):
-        box = QMessageBox(QMessageBox.Warning, "移动视频和字幕", "确定要移动视频和字幕吗？")
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("移动")
-        box.button(QMessageBox.No).setText("取消")
-        box.setDefaultButton(QMessageBox.No)
+        box = QMessageBox(QMessageBox.Icon.Warning, "移动视频和字幕", "确定要移动视频和字幕吗？")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText("移动")
+        box.button(QMessageBox.StandardButton.No).setText("取消")
+        box.setDefaultButton(QMessageBox.StandardButton.No)
         reply = box.exec()
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             self.pushButton_show_log_clicked()  # 点击开始移动按钮后跳转到日志页面
             try:
                 t = threading.Thread(target=self._move_file_thread)
@@ -2499,7 +2520,6 @@ class MyMAinWindow(QMainWindow):
 <head/>
 <body>
   <p><span style=" font-weight:700;">所有可用网站:</span></p>
-  <li>airav</li>
   <li>airav_cc</li>
   <li>avbase</li>
   <li>avsex</li>
@@ -2799,16 +2819,16 @@ class MyMAinWindow(QMainWindow):
         if self.check_mac and not IS_WINDOWS and ".app/Contents/Resources" in manager.data_folder.as_posix():
             self.check_mac = False
             box = QMessageBox(
-                QMessageBox.Warning,
+                QMessageBox.Icon.Warning,
                 "选择配置文件目录",
                 f"检测到当前配置文件目录为：\n {manager.data_folder}\n\n由于 MacOS 平台在每次更新 APP 版本时会覆盖该目录的配置，因此请选择其他的配置目录！\n这样下次更新 APP 时，选择相同的配置目录即可读取你之前的配置！！！",
             )
-            box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            box.button(QMessageBox.Yes).setText("选择目录")
-            box.button(QMessageBox.No).setText("取消")
-            box.setDefaultButton(QMessageBox.Yes)
+            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.button(QMessageBox.StandardButton.Yes).setText("选择目录")
+            box.button(QMessageBox.StandardButton.No).setText("取消")
+            box.setDefaultButton(QMessageBox.StandardButton.Yes)
             reply = box.exec()
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 self.pushButton_select_config_folder_clicked()
 
     # 设置-保存
@@ -2873,7 +2893,6 @@ class MyMAinWindow(QMainWindow):
                 "fc2": ["https://adult.contents.fc2.com", ""],
                 "fc2club": ["https://fc2club.top", ""],
                 "fc2hub": ["https://javten.com", ""],
-                "airav": ["https://www.airav.wiki", ""],
                 "av-wiki": ["https://av-wiki.net", ""],
                 "seesaawiki": ["https://seesaawiki.jp", ""],
                 "mywife": ["https://mywife.cc", ""],
@@ -2964,7 +2983,7 @@ class MyMAinWindow(QMainWindow):
                         each[1] = "❌ 连接失败 (被 Cloudflare 5 秒盾拦截！)"
                     else:
                         each[1] = f"✅ 连接正常{ping_host(host_address)}"
-                elif name in ["avsex", "freejavbt", "airav_cc", "airav", "madouqu", "7mmtv"]:
+                elif name in ["avsex", "freejavbt", "airav_cc", "madouqu", "7mmtv"]:
                     html_info, error = get_text_sync(each[0])
                     if html_info is None:
                         each[1] = "❌ 连接失败 请检查网络或代理设置！ " + error
@@ -3023,7 +3042,7 @@ class MyMAinWindow(QMainWindow):
         if self.Ui.pushButton_check_net.text() == "开始检测":
             self.Ui.pushButton_check_net.setText("停止检测")
             self.Ui.pushButton_check_net.setStyleSheet(
-                "QPushButton#pushButton_check_net{color: white;background-color: rgba(230, 36, 0, 250);}QPushButton:hover#pushButton_check_net{color: white;background-color: rgba(247, 36, 0, 250);}QPushButton:pressed#pushButton_check_net{color: white;background-color: rgba(180, 0, 0, 250);}"
+                "QPushButton#pushButton_check_net{color: white;background-color:#3758D8;}QPushButton:hover#pushButton_check_net{color: white;background-color:#4C6EFF;}QPushButton:pressed#pushButton_check_net{color: white;background-color:#2F49B8;}"
             )
             try:
                 self.t_net = threading.Thread(target=self.network_check)
@@ -3245,10 +3264,10 @@ class MyMAinWindow(QMainWindow):
         self.Ui.pushButton_find_missing_number.setEnabled(False)
         self.Ui.pushButton_find_missing_number.setText("正在刮削中...")
         self.Ui.pushButton_start_cap.setStyleSheet(
-            "QPushButton#pushButton_start_cap{color: white;background-color: rgba(230, 66, 30, 255);}QPushButton:hover#pushButton_start_cap{color: white;background-color: rgba(247, 36, 0, 250);}QPushButton:pressed#pushButton_start_cap{color: white;background-color: rgba(180, 0, 0, 250);}"
+            "QPushButton#pushButton_start_cap{color: white;background-color:#DC2626;}QPushButton:hover#pushButton_start_cap{color: white;background-color:#EF4444;}QPushButton:pressed#pushButton_start_cap{color: white;background-color:#B91C1C;}"
         )
         self.Ui.pushButton_start_cap2.setStyleSheet(
-            "QPushButton#pushButton_start_cap2{color: white;background-color: rgba(230, 66, 30, 255);}QPushButton:hover#pushButton_start_cap2{color: white;background-color: rgba(247, 36, 0, 250);}QPushButton:pressed#pushButton_start_cap2{color: white;background-color: rgba(180, 0, 0, 250);}"
+            "QPushButton#pushButton_start_cap2{color: white;background-color:#DC2626;}QPushButton:hover#pushButton_start_cap2{color: white;background-color:#EF4444;}QPushButton:pressed#pushButton_start_cap2{color: white;background-color:#B91C1C;}"
         )
 
     def reset_buttons_status(self):

@@ -17,6 +17,7 @@ from .enums import (
     DownloadableFile,
     EmbyAction,
     FieldRule,
+    FixedScrapingType,
     HDPicSource,
     KeepableFile,
     Language,
@@ -314,6 +315,7 @@ class Config(BaseModel):
             Website.JAVBUS,
             Website.JAVDAY,
             Website.JAVDB,
+            Website.JAVDBAPI,
             Website.LOVE6,
             Website.LULUBAR,
             Website.MGSTAGE,
@@ -334,7 +336,6 @@ class Config(BaseModel):
             Website.MMTV,
             Website.HDOUBAN,
             Website.JAVDB,
-            Website.AIRAV,
             Website.MISSAV,
         },
         title="无码网站源",
@@ -362,7 +363,6 @@ class Config(BaseModel):
             Website.HDOUBAN,
             Website.JAVDB,
             Website.AVSOX,
-            Website.AIRAV,
         },
         title="FC2网站源",
     )
@@ -373,6 +373,11 @@ class Config(BaseModel):
     website_guochan: set[Website] = Field(
         default_factory=lambda: {Website.MADOUQU, Website.MDTV, Website.HDOUBAN, Website.CNMDB, Website.JAVDAY},
         title="国产网站源",
+    )
+    fixed_scraping_type: FixedScrapingType = Field(
+        default=FixedScrapingType.AUTO,
+        title="锁定刮削类型",
+        description="选择后将跳过自动类型判断，直接使用指定类型的网站列表进行刮削",
     )
 
     title_sehua: bool = Field(default=True, title="使用色花标题")
@@ -385,63 +390,162 @@ class Config(BaseModel):
     field_configs: dict[CrawlerResultFields, FieldConfig] = Field(
         default_factory=lambda: {
             CrawlerResultFields.TITLE: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.JP,
             ),
             CrawlerResultFields.ORIGINALTITLE: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
             ),
             CrawlerResultFields.OUTLINE: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.JP,
             ),
             CrawlerResultFields.ORIGINALPLOT: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
             ),
             CrawlerResultFields.ACTORS: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.JP,
             ),
             CrawlerResultFields.ALL_ACTORS: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.JAVDB, Website.AVBASE],
+                site_prority=[Website.THEPORNDB, Website.JAVDBAPI, Website.JAVDB, Website.AVBASE],
                 language=Language.JP,
             ),
             CrawlerResultFields.TAGS: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.ZH_CN,
             ),
             CrawlerResultFields.DIRECTORS: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.JP,
             ),
             CrawlerResultFields.SERIES: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.JP,
             ),
             CrawlerResultFields.STUDIO: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.JP,
             ),
             CrawlerResultFields.PUBLISHER: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE],
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ],
                 language=Language.JP,
             ),
-            CrawlerResultFields.THUMB: FieldConfig(site_prority=[Website.THEPORNDB, Website.DMM, Website.AVBASE]),
-            CrawlerResultFields.POSTER: FieldConfig(site_prority=[Website.THEPORNDB, Website.DMM, Website.AVBASE]),
-            CrawlerResultFields.EXTRAFANART: FieldConfig(site_prority=[Website.THEPORNDB, Website.DMM, Website.AVBASE]),
+            CrawlerResultFields.THUMB: FieldConfig(
+                site_prority=[Website.THEPORNDB, Website.DMM, Website.JAVDBAPI, Website.AVBASE]
+            ),
+            CrawlerResultFields.POSTER: FieldConfig(
+                site_prority=[Website.THEPORNDB, Website.DMM, Website.JAVDBAPI, Website.AVBASE]
+            ),
+            CrawlerResultFields.EXTRAFANART: FieldConfig(
+                site_prority=[Website.THEPORNDB, Website.DMM, Website.JAVDBAPI, Website.AVBASE]
+            ),
             CrawlerResultFields.TRAILER: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE]
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ]
             ),
             CrawlerResultFields.RELEASE: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE]
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ]
             ),
             CrawlerResultFields.RUNTIME: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.OFFICIAL, Website.DMM, Website.JAVDB, Website.AVBASE]
+                site_prority=[
+                    Website.THEPORNDB,
+                    Website.OFFICIAL,
+                    Website.DMM,
+                    Website.JAVDBAPI,
+                    Website.JAVDB,
+                    Website.AVBASE,
+                ]
             ),
             CrawlerResultFields.SCORE: FieldConfig(
-                site_prority=[Website.THEPORNDB, Website.DMM, Website.JAVDB, Website.AVBASE]
+                site_prority=[Website.THEPORNDB, Website.DMM, Website.JAVDBAPI, Website.JAVDB, Website.AVBASE]
             ),
-            CrawlerResultFields.WANTED: FieldConfig(site_prority=[Website.DMM, Website.JAVDB, Website.AVBASE]),
+            CrawlerResultFields.WANTED: FieldConfig(
+                site_prority=[Website.DMM, Website.JAVDBAPI, Website.JAVDB, Website.AVBASE]
+            ),
         },
         title="字段配置",
     )
@@ -756,6 +860,22 @@ class Config(BaseModel):
         """
         处理字段变更.
         """
+
+        def is_removed_airav_site(site: object) -> bool:
+            return site == Website.AIRAV or site == Website.AIRAV.value
+
+        if is_removed_airav_site(d.get("website_single")):
+            d["website_single"] = Website.AIRAV_CC.value
+        for key, value in list(d.items()):
+            if key.startswith("website_") and key != "website_single":
+                if isinstance(value, str):
+                    d[key] = ",".join(site for site in str_to_list(value, ",") if not is_removed_airav_site(site))
+                elif isinstance(value, list | set):
+                    d[key] = [site for site in value if not is_removed_airav_site(site)]
+        if isinstance(field_configs := d.get("field_configs"), dict):
+            for value in field_configs.values():
+                if isinstance(value, dict) and isinstance(sites := value.get("site_prority"), list):
+                    value["site_prority"] = [site for site in sites if not is_removed_airav_site(site)]
         if "proxy_type" in d:
             d["use_proxy"] = d["proxy_type"] != "no"
         if isinstance(r := d.get("proxy"), str):
@@ -931,7 +1051,17 @@ class Config(BaseModel):
     @classmethod
     @lru_cache
     def json_schema(cls) -> dict[str, Any]:
-        return cls.model_json_schema()
+        schema = cls.model_json_schema()
+        try:
+            from mdcx.crawlers import get_registered_crawler_site_values
+
+            registered_sites = get_registered_crawler_site_values()
+        except Exception:
+            registered_sites = []
+        if registered_sites and (website_schema := schema.get("$defs", {}).get("Website")):
+            website_schema["enum"] = registered_sites
+            website_schema["showNames"] = registered_sites
+        return schema
 
 
 @dataclass

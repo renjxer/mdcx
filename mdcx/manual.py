@@ -4,7 +4,7 @@ from .gen.field_enums import CrawlerResultFields
 
 class ManualConfig:
     # 支持的网站, 用于支持自定义域名
-    SUPPORTED_WEBSITES = [w.value for w in Website.__members__.values()]
+    SUPPORTED_WEBSITES = [w.value for w in Website.__members__.values() if w != Website.AIRAV]
     # 可配置来源的字段
     CONFIG_DATA_FIELDS = [
         "actor",
@@ -475,7 +475,6 @@ class ManualConfig:
     WEB_DIC = {
         "avbase": Website.AVBASE,
         "airav.io": Website.AIRAV_CC,
-        "airav.wiki": Website.AIRAV,
         "9sex": Website.AVSEX,
         "avsex": Website.AVSEX,
         "avsox": Website.AVSOX,
@@ -488,6 +487,8 @@ class ManualConfig:
         "jav321": Website.JAV321,
         "javbus": Website.JAVBUS,
         "javdb": Website.JAVDB,
+        "javdbapi": Website.JAVDBAPI,
+        "thejavdb.net": Website.JAVDBAPI,
         "missav": Website.MISSAV,
         "javlibrary": Website.JAVLIBRARY,
         "mdtv": Website.MDTV,

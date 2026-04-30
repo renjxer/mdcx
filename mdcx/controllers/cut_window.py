@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PIL import Image
-from PyQt5.QtCore import QPoint, QRect, Qt
-from PyQt5.QtGui import QCursor, QPixmap
-from PyQt5.QtWidgets import QDialog, QFileDialog, QPushButton
+from PyQt6.QtCore import QPoint, QRect, Qt
+from PyQt6.QtGui import QCursor, QPixmap
+from PyQt6.QtWidgets import QDialog, QFileDialog, QPushButton
 
 from ..base.image import add_mark_thread
 from ..config.enums import DownloadableFile
@@ -16,6 +16,7 @@ from ..core.file import get_file_info_v2
 from ..utils import executor
 from ..utils.file import delete_file_sync
 from ..views.posterCutTool import Ui_Dialog_cut_poster
+from .main_window.style import get_theme_tokens
 
 if TYPE_CHECKING:
     from ..models.types import FileInfo
@@ -32,18 +33,30 @@ class DraggableButton(QPushButton):
         super().__init__(title, parent)
         self.iniDragCor = [0, 0]
         self.cutwindow = cutwindow
+        self._dragging = False
 
     def mousePressEvent(self, e):
         if e is None:
             return
-        self.iniDragCor[0] = e.x()
-        self.iniDragCor[1] = e.y()
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = e.position().toPoint()
+        self.iniDragCor[0] = pos.x()
+        self.iniDragCor[1] = pos.y()
+        self._dragging = True
+        self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+        e.accept()
 
     def mouseMoveEvent(self, e):
         if e is None:
             return
-        x = e.x() - self.iniDragCor[0]
-        y = e.y() - self.iniDragCor[1]
+        if not self._dragging or not e.buttons() & Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+            return
+        pos = e.position().toPoint()
+        x = pos.x() - self.iniDragCor[0]
+        y = pos.y() - self.iniDragCor[1]
         cor = QPoint(x, y)
         target = self.mapToParent(cor)
         if target.x() < 0:
@@ -54,10 +67,13 @@ class DraggableButton(QPushButton):
 
         # 更新实际裁剪位置
         self.cutwindow.getRealPos()
+        e.accept()
 
     def mouseReleaseEvent(self, e):
         if e and e.button() == Qt.MouseButton.LeftButton:
-            self.m_drag = False
+            self._dragging = False
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+            e.accept()
 
 
 class CutWindow(QDialog):
@@ -66,7 +82,7 @@ class CutWindow(QDialog):
         self.Ui = Ui_Dialog_cut_poster()  # 实例化 Ui
         self.Ui.setupUi(self)  # 初始化Ui
         self.main_window = parent
-        self.m_drag = True  # 允许拖动
+        self.m_drag = False  # 允许拖动
         self.m_DragPosition = None  # 拖动位置
         self.show_w = self.Ui.label_backgroud_pic.width()  # 图片显示区域的宽高
         self.show_h = self.Ui.label_backgroud_pic.height()  # 图片显示区域的宽高
@@ -80,13 +96,6 @@ class CutWindow(QDialog):
         self.pushButton_select_cutrange.setGeometry(QRect(420, 0, 379, 539))
         self.pushButton_select_cutrange.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.pushButton_select_cutrange.setAcceptDrops(True)
-        self.pushButton_select_cutrange.setStyleSheet(
-            "background-color: rgba(200, 200, 200, 80);\n"
-            "font-size:13px;\n"
-            "font-weight:normal;"
-            "color: rgba(0, 0, 0, 255);\n"
-            "border:2px solid rgba(0, 55, 255, 255);\n"
-        )
         self.set_style()
         self.Ui.horizontalSlider_left.valueChanged.connect(self.change_postion_left)
         self.Ui.horizontalSlider_right.valueChanged.connect(self.change_postion_right)
@@ -98,46 +107,86 @@ class CutWindow(QDialog):
 
     def set_style(self):
         # 控件美化 裁剪弹窗
-        self.Ui.widget.setStyleSheet("""
-            * {
+        dark_mode = bool(getattr(self.main_window, "dark_mode", False))
+        t = get_theme_tokens(dark_mode)
+        self.pushButton_select_cutrange.setStyleSheet(f"""
+            QPushButton#pushButton_select_cutrange {{
+                color: {t["text"]};
+                background-color: rgba(76, 110, 255, 34);
+                border: 2px solid {t["accent"]};
+                font-size: 13px;
+                font-weight: normal;
+            }}
+            QPushButton#pushButton_select_cutrange:hover {{
+                color: #FFFFFF;
+                background-color: rgba(76, 110, 255, 76);
+                border-color: {t["accent_hover"]};
+            }}
+        """)
+        self.Ui.widget.setStyleSheet(f"""
+            * {{
                 font-family: Consolas, 'PingFang SC', 'Microsoft YaHei UI', 'Noto Color Emoji', 'Segoe UI Emoji';
-            }
-            QPushButton{
-                color:black;
+                color: {t["text"]};
+            }}
+            QWidget{{
+                background: {t["surface_muted"]};
+            }}
+            QPushButton{{
+                color:{t["text"]};
                 font-size:14px;
-                background-color:#CCCCCC;
+                background-color:{t["surface"]};
+                border: 1px solid {t["border"]};
                 border-radius:20px;
                 padding: 2px, 2px;
-            }
-            QPushButton:hover{
+            }}
+            QPushButton:hover{{
                 color: white;
-                background-color:#4C6EFF;
+                background-color:{t["accent_hover"]};
                 font-weight:bold;
-            }
-            QPushButton:pressed{
-                background-color:#4C6EE0;
-                border-color:black;
-                border-width:12px;
+            }}
+            QPushButton:pressed{{
+                background-color:{t["accent_pressed"]};
+                border-color:{t["accent_pressed"]};
                 font-weight:bold;
-            }
-            QPushButton#pushButton_cut_close{
+            }}
+            QPushButton#pushButton_cut_close{{
                 color: white;
                 font-size:14px;
-                background-color:#5E95CC;
+                background-color:{t["accent"]};
                 border-radius:25px;
                 padding: 2px, 2px;
-            }
-            QPushButton:hover#pushButton_cut_close{
+            }}
+            QPushButton:hover#pushButton_cut_close{{
                 color: white;
-                background-color:#4C6EFF;
+                background-color:{t["accent_hover"]};
                 font-weight:bold;
-            }
-            QPushButton:pressed#pushButton_cut_close{
-                background-color:#4C6EE0;
-                border-color:black;
-                border-width:14px;
+            }}
+            QPushButton:pressed#pushButton_cut_close{{
+                background-color:{t["accent_pressed"]};
+                border-color:{t["accent_pressed"]};
                 font-weight:bold;
-            }
+            }}
+            QSlider::groove:horizontal{{
+                height: 6px;
+                border-radius: 3px;
+                background: {t["border"]};
+            }}
+            QSlider::sub-page:horizontal{{
+                border-radius: 3px;
+                background: {t["accent"]};
+            }}
+            QSlider::add-page:horizontal{{
+                border-radius: 3px;
+                background: {t["border"]};
+            }}
+            QSlider::handle:horizontal{{
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+                border: 2px solid {t["accent"]};
+                background: {t["window"]};
+            }}
             """)
 
     def change_postion_left(self):
@@ -459,7 +508,7 @@ class CutWindow(QDialog):
             return
         if a0.button() == Qt.MouseButton.LeftButton:
             self.m_drag = True
-            self.m_DragPosition = a0.globalPos() - self.pos()
+            self.m_DragPosition = a0.globalPosition().toPoint() - self.pos()
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))  # 按下左键改变鼠标指针样式为手掌
 
     def mouseReleaseEvent(self, a0):
@@ -467,12 +516,17 @@ class CutWindow(QDialog):
             return
         if a0.button() == Qt.MouseButton.LeftButton:
             self.m_drag = False
+            self.m_DragPosition = None
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))  # 释放左键改变鼠标指针样式为箭头
 
     def mouseMoveEvent(self, a0):
         if a0 is None:
             return
-        if Qt.MouseButton.LeftButton and self.m_drag and self.m_DragPosition is not None:
-            self.move(a0.globalPos() - self.m_DragPosition)
+        if self.m_drag and self.m_DragPosition is not None and a0.buttons() & Qt.MouseButton.LeftButton:
+            self.move(a0.globalPosition().toPoint() - self.m_DragPosition)
             a0.accept()
+        else:
+            self.m_drag = False
+            self.m_DragPosition = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         # self.show_traceback_log('main',e.x(),e.y())
