@@ -51,6 +51,11 @@ __all__ = [
 ]
 
 
+async def _cleanup_download_part_files(*file_paths: Path) -> None:
+    for file_path in file_paths:
+        await delete_file_async(file_path.with_name(f"{file_path.name}.part"))
+
+
 async def trailer_download(
     result: CrawlersResult,
     folder_new: Path,
@@ -76,6 +81,7 @@ async def trailer_download(
         if trailer_folder_path in Flags.trailer_deal_set:
             return
         Flags.trailer_deal_set.add(trailer_folder_path)
+        await _cleanup_download_part_files(trailer_file_path, trailer_file_path.with_suffix(".[DOWNLOAD].mp4"))
 
         # 不下载不保留时删除返回
         if DownloadableFile.TRAILER not in download_files and DownloadableFile.TRAILER not in keep_files:
@@ -89,6 +95,7 @@ async def trailer_download(
         trailer_file_name = naming_rule + "-trailer.mp4"
         trailer_folder_path = folder_new
         trailer_file_path = trailer_folder_path / trailer_file_name
+        await _cleanup_download_part_files(trailer_file_path, trailer_file_path.with_suffix(".[DOWNLOAD].mp4"))
 
         # 不下载不保留时删除返回
         if DownloadableFile.TRAILER not in download_files and DownloadableFile.TRAILER not in keep_files:
@@ -770,8 +777,7 @@ async def extrafanart_download(extrafanart: list[str], extrafanart_from: str, fo
     if DownloadableFile.EXTRAFANART not in download_files:
         return True
 
-    # 检测链接有效性
-    if extrafanart_list and await check_url(extrafanart_list[0]):
+    if extrafanart_list:
         extrafanart_folder_path_temp = extrafanart_folder_path
         if await aiofiles.os.path.exists(extrafanart_folder_path_temp):
             extrafanart_folder_path_temp = extrafanart_folder_path.with_name(

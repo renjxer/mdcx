@@ -247,12 +247,12 @@ def _parse_content_length(value: Any) -> int | None:
 async def _validate_dmm_image_url(url: str, length: bool = False, real_url: bool = False):
     normalized = normalize_media_url(url)
     request_url, added_probe = _build_dmm_probe_url(normalized)
-    max_retries = 2
+    max_retries = max(int(manager.config.retry), 1)
     last_error = ""
 
     for retry_attempt in range(max_retries):
         try:
-            response, error = await manager.computed.async_client.request("GET", request_url)
+            response, error = await manager.computed.async_client.request("GET", request_url, retry_count=1)
             if response is None:
                 last_error = error
                 if retry_attempt < max_retries - 1 and _should_retry_link_error(error):
@@ -312,7 +312,7 @@ async def get_url_content_length(url: str) -> int | None:
 
     if is_dmm_image_url(normalized):
         for attempt, delay in enumerate(retry_delays, start=1):
-            response, error = await manager.computed.async_client.request("GET", normalized)
+            response, error = await manager.computed.async_client.request("GET", normalized, retry_count=1)
             if response is None:
                 if not _should_retry_link_error(error) or attempt == len(retry_delays):
                     return None
@@ -333,7 +333,7 @@ async def get_url_content_length(url: str) -> int | None:
         return None
 
     for attempt, delay in enumerate(retry_delays, start=1):
-        response, error = await manager.computed.async_client.request("HEAD", normalized)
+        response, error = await manager.computed.async_client.request("HEAD", normalized, retry_count=1)
         if response is not None:
             if content_length := _parse_content_length(response.headers.get("Content-Length")):
                 return content_length
@@ -346,7 +346,7 @@ async def get_url_content_length(url: str) -> int | None:
             await asyncio.sleep(delay)
 
     for attempt, delay in enumerate(retry_delays, start=1):
-        response, error = await manager.computed.async_client.request("GET", normalized)
+        response, error = await manager.computed.async_client.request("GET", normalized, retry_count=1)
         if response is None:
             if not _should_retry_link_error(error) or attempt == len(retry_delays):
                 return None
@@ -534,11 +534,13 @@ async def get_amazon_data(req_url: str) -> tuple[bool, str]:
 
 async def get_imgsize(url) -> tuple[int, int]:
     response, _ = await manager.computed.async_client.request("GET", url, stream=True)
-    if response is None or response.status_code != 200:
+    if response is None:
         return 0, 0
     file_head = BytesIO()
     chunk_size = 1024 * 10
     try:
+        if response.status_code != 200:
+            return 0, 0
         for chunk in response.iter_content(chunk_size):
             file_head.write(await chunk)
             try:
@@ -554,7 +556,7 @@ async def get_imgsize(url) -> tuple[int, int]:
     except Exception:
         return 0, 0
     finally:
-        response.close()
+        await manager.computed.async_client._close_response(response)
 
     return 0, 0
 
@@ -601,7 +603,9 @@ async def get_dmm_trailer(trailer_url: str) -> str:
                 for attempt in range(3):
                     try:
                         # 进行HEAD请求检测
-                        response, error = await manager.computed.async_client.request("HEAD", converted_url)
+                        response, error = await manager.computed.async_client.request(
+                            "HEAD", converted_url, retry_count=1
+                        )
 
                         if response is not None:
                             # 请求成功
@@ -990,9 +994,68 @@ async def download_content_with_filepath(url: str, file_path: Path, folder_new_p
     return False
 
 
+async def download_dmm_extrafanart_with_filepath(url: str, file_path: Path, folder_new_path: Path) -> bool:
+    if not url:
+        return False
+
+    if not await aiofiles.os.path.exists(folder_new_path):
+        await aiofiles.os.makedirs(folder_new_path)
+
+    normalized_url = normalize_media_url(url)
+    if _is_invalid_image_redirect_url(normalized_url):
+        LogBuffer.log().write(f"\n 💡 DMM image invalid! {url}")
+        return False
+
+    try:
+        response, error = await manager.computed.async_client.request("GET", normalized_url)
+        if response is None:
+            LogBuffer.log().write(f"\n 🥺 Download failed! {url} {error}")
+            return False
+
+        true_url = normalize_media_url(str(response.url))
+        if _is_invalid_image_redirect_url(true_url):
+            LogBuffer.log().write(f"\n 💡 DMM image invalid! {true_url}")
+            return False
+
+        if not response.content:
+            LogBuffer.log().write(f"\n 🥺 Download failed! {url} empty content")
+            return False
+
+        is_webp = file_path.suffix.lower() == ".jpg" and ".webp" in true_url.lower()
+        if not is_webp:
+            async with aiofiles.open(file_path, "wb") as f:
+                await f.write(response.content)
+            return True
+
+        byte_stream = BytesIO(response.content)
+        img = Image.open(byte_stream)
+        try:
+            if img.mode == "RGBA":
+                img = img.convert("RGB")
+            img.save(file_path, quality=95, subsampling=0)
+        finally:
+            img.close()
+        return True
+    except Exception:
+        pass
+
+    LogBuffer.log().write(f"\n 🥺 Download failed! {url}")
+    return False
+
+
 async def download_extrafanart_task(task: tuple[str, Path, Path, str]) -> bool:
     extrafanart_url, extrafanart_file_path, extrafanart_folder_path, extrafanart_name = task
-    if await download_content_with_filepath(extrafanart_url, extrafanart_file_path, extrafanart_folder_path):
+    normalized_url = normalize_media_url(extrafanart_url)
+    if is_dmm_image_url(normalized_url):
+        downloaded = await download_dmm_extrafanart_with_filepath(
+            normalized_url, extrafanart_file_path, extrafanart_folder_path
+        )
+    else:
+        downloaded = await download_content_with_filepath(
+            extrafanart_url, extrafanart_file_path, extrafanart_folder_path
+        )
+
+    if downloaded:
         if await check_pic_async(extrafanart_file_path):
             return True
     else:
