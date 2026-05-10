@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 from datetime import date
 from itertools import chain
 from typing import TYPE_CHECKING
@@ -13,6 +14,7 @@ from ..models.log_buffer import LogBuffer
 from ..models.types import CrawlerInput, CrawlerResponse, CrawlerResult, CrawlersResult, CrawlTask
 from ..number import is_uncensored
 from ..utils.dataclass import update
+from .mosaic import is_guochan_mosaic, is_plain_uncensored_mosaic, normalize_mosaic
 
 if TYPE_CHECKING:
     from ..config.models import Config
@@ -50,7 +52,104 @@ def _is_suren_number(file_number: str, short_number: str) -> bool:
     return bool(short_number) or "SIRO" in file_number.upper()
 
 
+@dataclass(frozen=True)
+class ScrapeClassification:
+    scraping_type: FixedScrapingType
+    scraping_type_source: str
+    sites: list[Website] | set[Website] | None = None
+    website: Website | None = None
+    mosaic: str = ""
+
+
+def classify_scrape_task(task_input: CrawlTask, config: "Config", use_fixed_type: bool = True) -> ScrapeClassification:
+    file_number = task_input.number
+    file_path = task_input.file_path
+    file_path_str = str(file_path).lower() if file_path else ""
+    mosaic = task_input.mosaic
+
+    fixed_type = config.fixed_scraping_type
+    fixed_sites = {
+        FixedScrapingType.YOUMA: config.website_youma,
+        FixedScrapingType.WUMA: config.website_wuma,
+        FixedScrapingType.SUREN: config.website_suren,
+        FixedScrapingType.FC2: config.website_fc2,
+        FixedScrapingType.OUMEI: config.website_oumei,
+        FixedScrapingType.GUOCHAN: config.website_guochan,
+    }
+    if use_fixed_type and fixed_type != FixedScrapingType.AUTO:
+        return ScrapeClassification(fixed_type, "fixed", sites=fixed_sites[fixed_type])
+
+    if (
+        is_guochan_mosaic(mosaic)
+        or (re.search(r"([^A-Z]|^)MD[A-Z-]*\d{4,}", file_number) and "MDVR" not in file_number)
+        or re.search(r"MKY-[A-Z]+-\d{3,}", file_number)
+    ):
+        return ScrapeClassification(FixedScrapingType.GUOCHAN, "auto", sites=config.website_guochan, mosaic="国产")
+
+    if file_number.startswith("KIN8"):
+        return ScrapeClassification(FixedScrapingType.YOUMA, "auto", website=Website.KIN8)
+
+    if file_number.startswith("DLID"):
+        return ScrapeClassification(FixedScrapingType.AUTO, "auto", website=Website.GETCHU)
+
+    if "getchu" in file_path_str or "里番" in file_path_str or "裏番" in file_path_str:
+        return ScrapeClassification(FixedScrapingType.AUTO, "auto", website=Website.GETCHU_DMM)
+
+    if "mywife" in file_path_str:
+        return ScrapeClassification(FixedScrapingType.YOUMA, "auto", website=Website.MYWIFE)
+
+    if "FC2" in file_number.upper():
+        file_number_1 = re.search(r"\d{5,}", file_number)
+        if file_number_1:
+            return ScrapeClassification(FixedScrapingType.FC2, "auto", sites=config.website_fc2)
+        if not use_fixed_type:
+            return ScrapeClassification(FixedScrapingType.AUTO, "auto")
+        raise Exception(f"未识别的 FC2 番号: {file_number}")
+
+    if re.search(r"[^.]+\.\d{2}\.\d{2}\.\d{2}", file_number) or (
+        "欧美" in file_path_str and "东欧美" not in file_path_str
+    ):
+        return ScrapeClassification(FixedScrapingType.OUMEI, "auto", sites=config.website_oumei)
+
+    if is_plain_uncensored_mosaic(mosaic):
+        return ScrapeClassification(FixedScrapingType.WUMA, "auto", sites=config.website_wuma)
+
+    if _is_suren_number(file_number, task_input.short_number):
+        return ScrapeClassification(FixedScrapingType.SUREN, "auto", sites=config.website_suren)
+
+    if is_uncensored(file_number):
+        return ScrapeClassification(FixedScrapingType.WUMA, "auto", sites=config.website_wuma)
+
+    if re.match(r"\D{2,}00\d{3,}", file_number) and "-" not in file_number and "_" not in file_number:
+        return ScrapeClassification(FixedScrapingType.YOUMA, "auto", sites={Website.DMM})
+
+    return ScrapeClassification(FixedScrapingType.YOUMA, "auto", sites=config.website_youma)
+
+
+def apply_scrape_classification(result: CrawlersResult, classification: ScrapeClassification) -> None:
+    result.scraping_type = classification.scraping_type
+    result.scraping_type_source = classification.scraping_type_source
+
+
+def classify_existing_scrape_result(
+    task_input: CrawlTask, result: CrawlersResult, config: "Config", use_fixed_type: bool = True
+) -> ScrapeClassification:
+    # 读取已有 NFO 时保留文件上下文，只用 NFO 中更可信的番号和马赛克覆盖分类输入。
+    classification_input = update(
+        task_input,
+        {
+            "number": result.number or task_input.number,
+            "mosaic": result.mosaic or task_input.mosaic,
+        },
+    )
+    classification = classify_scrape_task(classification_input, config, use_fixed_type=use_fixed_type)
+    apply_scrape_classification(result, classification)
+    return classification
+
+
 def _deal_res(res: CrawlersResult) -> CrawlersResult:
+    res.mosaic = normalize_mosaic(res.mosaic)
+
     # 标签
     tag = re.sub(r",\d+[kKpP],", ",", res.tag)
     tag_rep_word = [",HD高画质", ",HD高畫質", ",高画质", ",高畫質"]
@@ -168,11 +267,18 @@ class FileScraper:
         finally:
             task_input.number = original_number
 
-    async def _call_crawlers(self, task_input: CrawlerInput, type_sites: set[Website]) -> CrawlersResult | None:
+    async def _call_crawlers(
+        self, task_input: CrawlerInput, classification: ScrapeClassification | list[Website] | set[Website]
+    ) -> CrawlersResult | None:
         """
         获取一组网站的数据：按照设置的网站组，请求各字段数据，并返回最终的数据
         采用按需请求策略：仅请求必要的网站，失败时才请求下一优先级网站
         """
+        use_type_field_config = isinstance(classification, ScrapeClassification)
+        if not isinstance(classification, ScrapeClassification):
+            classification = ScrapeClassification(FixedScrapingType.AUTO, "compat", sites=classification)
+        type_sites = list(classification.sites or [])
+        type_site_set = set(type_sites)
         all_res: dict[tuple[Website, Language], CrawlerResult] = {}
         failed: set[tuple[Website, Language]] = set()  # 记录失败的网站
         reduced = CrawlersResult.empty()
@@ -182,7 +288,11 @@ class FileScraper:
         for field in ManualConfig.REDUCED_FIELDS:
             # 获取该字段的优先级列表
             f_config = self.config.get_field_config(field)
-            f_sites = [s for s in f_config.site_prority if s in type_sites]
+            if use_type_field_config and hasattr(self.config, "get_type_field_config"):
+                type_field_config = self.config.get_type_field_config(classification.scraping_type, field)
+            else:
+                type_field_config = f_config
+            f_sites = [s for s in type_field_config.site_prority if s in type_site_set]
             f_lang = f_config.language
 
             reduced.field_log += (
@@ -308,7 +418,7 @@ class FileScraper:
 
         # 处理 mosaic
         for site, result in all_res.items():
-            if mosaic := result.mosaic:
+            if mosaic := normalize_mosaic(result.mosaic):
                 reduced.mosaic = mosaic
                 break
 
@@ -370,93 +480,24 @@ class FileScraper:
         appoint_number = task_input.appoint_number
         destroyed = task_input.destroyed
         file_number = task_input.number
-        file_path = task_input.file_path
-        file_path_str = str(file_path).lower() if file_path else ""
         leak = task_input.leak
         mosaic = task_input.mosaic
-        short_number = task_input.short_number
-        is_suren = _is_suren_number(file_number, short_number)
         wuma = task_input.wuma
         youma = task_input.youma
 
         # ================================================网站规则添加开始================================================
 
         if website is None:  # 从全部网站刮削
-            # =======================================================================锁定刮削类型（跳过自动判断）
-            _fixed = self.config.fixed_scraping_type
-            if _fixed == FixedScrapingType.YOUMA:
-                res = await self._call_crawlers(task_input, self.config.website_youma)
-            elif _fixed == FixedScrapingType.WUMA:
-                res = await self._call_crawlers(task_input, self.config.website_wuma)
-            elif _fixed == FixedScrapingType.SUREN:
-                res = await self._call_crawlers(task_input, self.config.website_suren)
-            elif _fixed == FixedScrapingType.FC2:
-                res = await self._call_crawlers(task_input, self.config.website_fc2)
-            elif _fixed == FixedScrapingType.OUMEI:
-                res = await self._call_crawlers(task_input, self.config.website_oumei)
-            elif _fixed == FixedScrapingType.GUOCHAN:
-                res = await self._call_crawlers(task_input, self.config.website_guochan)
-            # =======================================================================先判断是不是国产，避免浪费时间
-            elif (
-                mosaic == "国产"
-                or mosaic == "國產"
-                or (re.search(r"([^A-Z]|^)MD[A-Z-]*\d{4,}", file_number) and "MDVR" not in file_number)
-                or re.search(r"MKY-[A-Z]+-\d{3,}", file_number)
-            ):
-                task_input.mosaic = "国产"
-                res = await self._call_crawlers(task_input, self.config.website_guochan)
-
-            # =======================================================================kin8
-            elif file_number.startswith("KIN8"):
-                website = Website.KIN8
-                res = await self._call_specific_crawler(task_input, website)
-
-            # =======================================================================同人
-            elif file_number.startswith("DLID"):
-                website = Website.GETCHU
-                res = await self._call_specific_crawler(task_input, website)
-
-            # =======================================================================里番
-            elif "getchu" in file_path_str or "里番" in file_path_str or "裏番" in file_path_str:
-                website = Website.GETCHU_DMM
-                res = await self._call_specific_crawler(task_input, website)
-
-            # =======================================================================Mywife No.1111
-            elif "mywife" in file_path_str:
-                website = Website.MYWIFE
-                res = await self._call_specific_crawler(task_input, website)
-
-            # =======================================================================FC2-111111
-            elif "FC2" in file_number.upper():
-                file_number_1 = re.search(r"\d{5,}", file_number)
-                if file_number_1:
-                    file_number_1.group()
-                    res = await self._call_crawlers(task_input, self.config.website_fc2)
-                else:
-                    raise Exception(f"未识别的 FC2 番号: {file_number}")
-
-            # =======================================================================sexart.15.06.14
-            elif re.search(r"[^.]+\.\d{2}\.\d{2}\.\d{2}", file_number) or (
-                "欧美" in file_path_str and "东欧美" not in file_path_str
-            ):
-                res = await self._call_crawlers(task_input, self.config.website_oumei)
-
-            # =======================================================================无码抓取:111111-111,n1111,HEYZO-1111,SMD-115
-            elif mosaic == "无码" or mosaic == "無碼":
-                res = await self._call_crawlers(task_input, self.config.website_wuma)
-
-            # =======================================================================259LUXU-1111
-            elif is_suren:
-                res = await self._call_crawlers(task_input, self.config.website_suren)
-
-            # =======================================================================ssni00321
-            elif re.match(r"\D{2,}00\d{3,}", file_number) and "-" not in file_number and "_" not in file_number:
-                res = await self._call_crawlers(task_input, {Website.DMM})
-
-            # =======================================================================剩下的（含匹配不了）的按有码来刮削
+            classification = classify_scrape_task(task_input, self.config)
+            if classification.mosaic:
+                task_input.mosaic = classification.mosaic
+                mosaic = classification.mosaic
+            if classification.website:
+                res = await self._call_specific_crawler(task_input, classification.website)
             else:
-                res = await self._call_crawlers(task_input, self.config.website_youma)
+                res = await self._call_crawlers(task_input, classification)
         else:
+            classification = classify_scrape_task(task_input, self.config, use_fixed_type=False)
             res = await self._call_specific_crawler(task_input, website)
 
         # ================================================网站请求结束================================================
@@ -469,10 +510,11 @@ class FileScraper:
         if appoint_number:
             number = appoint_number
         res.number = number  # 此处设置
-        res.is_suren = is_suren
+        apply_scrape_classification(res, classification)
 
         # 从res获取mosaic
-        if res.mosaic == "无码":
+        res.mosaic = normalize_mosaic(res.mosaic)
+        if is_plain_uncensored_mosaic(res.mosaic):
             wuma = True
 
         # 马赛克
@@ -485,12 +527,13 @@ class FileScraper:
         elif youma:
             res.mosaic = "有码"
         elif mosaic:
-            res.mosaic = mosaic
+            res.mosaic = normalize_mosaic(mosaic)
         if not res.mosaic:
             if is_uncensored(number):
                 res.mosaic = "无码"
             else:
                 res.mosaic = "有码"
+        res.mosaic = normalize_mosaic(res.mosaic)
 
         # 原标题，用于amazon搜索
         res.originaltitle_amazon = res.originaltitle

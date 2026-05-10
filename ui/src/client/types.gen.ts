@@ -400,21 +400,9 @@ export type Config = {
      */
     title_language?: string;
     /**
-     * 标题色花
-     */
-    title_sehua?: boolean;
-    /**
-     * 标题Yesjav
-     */
-    title_yesjav?: boolean;
-    /**
      * 翻译标题
      */
     title_translate?: boolean;
-    /**
-     * 中文标题色花
-     */
-    title_sehua_zh?: boolean;
     /**
      * 简介语言
      */
@@ -849,7 +837,7 @@ export type CreateSoftlinksBody = {
 /**
  * DownloadableFile
  */
-export type DownloadableFile = 'poster' | 'thumb' | 'fanart' | 'extrafanart' | 'trailer' | 'nfo' | 'extrafanart_extras' | 'extrafanart_copy' | 'theme_videos' | 'ignore_pic_fail' | 'ignore_youma' | 'ignore_wuma' | 'ignore_fc2' | 'ignore_guochan' | 'ignore_size';
+export type DownloadableFile = 'poster' | 'thumb' | 'fanart' | 'extrafanart' | 'trailer' | 'nfo' | 'extrafanart_extras' | 'extrafanart_copy' | 'theme_videos' | 'ignore_pic_fail' | 'ignore_youma' | 'poster_auto_best' | 'ignore_wuma' | 'ignore_fc2' | 'ignore_guochan' | 'ignore_size';
 
 /**
  * EmbyAction
@@ -1303,6 +1291,11 @@ export type ListFilesData = {
          * 服务器路径. 相对路径将基于 SAFE_DIRS 中的首个路径解析.
          */
         path: string;
+        /**
+         * Directories Only
+         * 仅返回目录, 用于目录选择场景以减少文件系统访问.
+         */
+        directories_only?: boolean;
     };
     url: '/api/v1/files/list';
 };

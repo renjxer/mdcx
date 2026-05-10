@@ -18,9 +18,32 @@ from ..models.types import BaseCrawlerResult, CrawlersResult, FileInfo, OtherInf
 from ..number import get_file_number, get_number_letters, is_uncensored
 from ..signals import signal
 from ..utils import nfd2c, split_path
-from ..utils.file import copy_file_async, delete_file_async, move_file_async
+from ..utils.file import (
+    build_file_name_index,
+    copy_file_async,
+    delete_file_async,
+    find_file_from_index,
+    move_file_async,
+)
 from ..utils.path import showFilePath
+from .mosaic import normalize_mosaic
 from .utils import render_name_template
+
+
+def _has_umr_suffix_marker(file_name: str, movie_number: str) -> bool:
+    normalized_name = remove_escape_string(file_name, "-").upper()
+    normalized_number = movie_number.upper()
+    if normalized_number:
+        normalized_name = normalized_name.replace(normalized_number, "-")
+
+    compact_definition_suffixes = (
+        "4K60FPS",
+        "4KS",
+        "8K",
+        "4K",
+    )
+    compact_definition = "|".join(compact_definition_suffixes)
+    return bool(re.search(rf"(?<![A-Z0-9])U(?:C)?(?=(?:{compact_definition}|[-_.\s\]\)]|$))", normalized_name))
 
 
 async def creat_folder(
@@ -542,8 +565,7 @@ async def get_file_info_v2(file_path: Path, copy_sub: bool = True) -> FileInfo:
             or "破解" in file_path_str
             or "克破" in file_path_str
             or (umr_style_lower and umr_style_lower in file_path_lower)
-            or "-u." in file_path_lower
-            or "-uc." in file_path_lower
+            or _has_umr_suffix_marker(file_name, movie_number)
         ):
             destroyed = umr_style
             mosaic = "无码破解"
@@ -693,22 +715,28 @@ async def get_file_info_v2(file_path: Path, copy_sub: bool = True) -> FileInfo:
             subtitle_folder = manager.config.subtitle_folder
             subtitle_add = manager.config.subtitle_add
             if subtitle_add and subtitle_folder:  # 复制字幕开
+                subtitle_file_index = await build_file_name_index(subtitle_folder)
                 for sub_type in sub_type_list:
-                    sub_path_1 = os.path.join(subtitle_folder, (movie_number + cd_part + sub_type))
-                    sub_path_2 = os.path.join(subtitle_folder, file_name + sub_type)
+                    sub_path = find_file_from_index(
+                        subtitle_file_index,
+                        (movie_number + cd_part + sub_type, file_name + sub_type),
+                    )
                     sub_file_name = file_name + sub_type
                     if manager.config.subtitle_add_chs:
                         sub_file_name = file_name + ".chs" + sub_type
                         sub_type = ".chs" + sub_type
                     sub_new_path = folder_path / sub_file_name
-                    for sub_path in (sub_path_1, sub_path_2):
-                        if await aiofiles.os.path.exists(sub_path):
-                            await copy_file_async(sub_path, sub_new_path)
-                            LogBuffer.log().write(f"\n\n 🍉 Sub file '{sub_file_name}' copied successfully! ")
-                            sub_list.append(sub_type)
-                            c_word = cnword_style  # 中文字幕影片后缀
-                            has_sub = True
-                            break
+                    if sub_path and await aiofiles.os.path.exists(sub_path):
+                        await copy_file_async(sub_path, sub_new_path)
+                        LogBuffer.log().write(
+                            f"\n\n 🍉 Sub file '{sub_file_name}' copied successfully! Source: {sub_path}"
+                        )
+                        sub_list.append(sub_type)
+                        c_word = cnword_style  # 中文字幕影片后缀
+                        has_sub = True
+                        break
+
+        mosaic = normalize_mosaic(mosaic)
 
         file_show_name = movie_number
         suffix_sort_list = manager.config.suffix_sort

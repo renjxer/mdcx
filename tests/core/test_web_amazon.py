@@ -1,16 +1,23 @@
 import re
 import urllib.parse
+from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
-from mdcx.config.enums import HDPicSource
+from mdcx.config.enums import DownloadableFile, FixedScrapingType, HDPicSource
 from mdcx.config.manager import manager
+from mdcx.core.image import cut_thumb_to_poster
 from mdcx.core.web import (
     _beam_search_amazon_ean13_from_ranked_digits,
     _extract_amazon_barcode_label_roi,
     _get_big_poster,
+    _get_poster_copy_policy,
+    _select_poster_auto_best,
+    _should_try_direct_poster,
     get_big_pic_by_amazon,
+    poster_download,
     try_get_amazon_barcode_from_covers,
 )
 from mdcx.models.log_buffer import LogBuffer
@@ -27,13 +34,338 @@ def _normalize_search_query(query: str) -> str:
     return re.sub(r" \[(DVD|Blu-ray)\]$", "", query)
 
 
+def _save_test_image(path: Path, size: tuple[int, int]):
+    Image.new("RGB", size, "white").save(path, format="JPEG")
+
+
+@pytest.mark.asyncio
+async def test_select_poster_auto_best_prefers_larger_search_candidate(monkeypatch: pytest.MonkeyPatch):
+    async def fake_get_image_size(url: str, media_context=None):
+        assert url == "https://example.test/search.jpg"
+        return 1200, 1800
+
+    monkeypatch.setattr("mdcx.core.web._get_image_size", fake_get_image_size)
+
+    result = CrawlersResult.empty()
+    result.poster = "https://example.test/search.jpg"
+    result.poster_from = "Amazon"
+    other = OtherInfo.empty()
+
+    await _select_poster_auto_best(
+        result,
+        other,
+        direct_url="https://example.test/direct.jpg",
+        direct_from="crawler",
+        direct_size=(500, 750),
+        crop_source_path=None,
+    )
+
+    assert result.poster == "https://example.test/search.jpg"
+    assert result.poster_from == "Amazon"
+    assert result.image_download is True
+
+
+@pytest.mark.asyncio
+async def test_select_poster_auto_best_falls_back_to_thumb_right_crop(tmp_path: Path):
+    thumb_path = tmp_path / "thumb.jpg"
+    _save_test_image(thumb_path, (800, 500))
+
+    result = CrawlersResult.empty()
+    result.poster = "https://example.test/direct.jpg"
+    result.poster_from = "crawler"
+    result.image_download = True
+    other = OtherInfo.empty()
+
+    await _select_poster_auto_best(
+        result,
+        other,
+        direct_url="https://example.test/direct.jpg",
+        direct_from="crawler",
+        direct_size=(200, 300),
+        crop_source_path=thumb_path,
+    )
+
+    assert result.image_download is False
+
+
+@pytest.mark.asyncio
+async def test_poster_download_keeps_vr_direct_poster_without_auto_best(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    async def fake_get_big_poster(*args, **kwargs):
+        return None
+
+    async def fake_download_file_with_filepath(url: str, file_path: Path, folder_path: Path):
+        assert url == "https://example.test/vr-poster.jpg"
+        _save_test_image(file_path, (500, 750))
+        return True
+
+    monkeypatch.setattr(manager.config, "download_files", [DownloadableFile.POSTER])
+    monkeypatch.setattr(manager.config, "keep_files", [])
+    monkeypatch.setattr("mdcx.core.web._get_big_poster", fake_get_big_poster)
+    monkeypatch.setattr("mdcx.core.web.download_file_with_filepath", fake_download_file_with_filepath)
+    monkeypatch.setattr(
+        "mdcx.core.image.get_face_crop_left",
+        lambda image, crop_width, **kwargs: (_ for _ in ()).throw(AssertionError("不应裁剪")),
+    )
+
+    result = CrawlersResult.empty()
+    result.number = "ABVR-001"
+    result.title = "VR SAMPLE"
+    result.poster = "https://example.test/vr-poster.jpg"
+    result.poster_from = "crawler"
+    result.image_download = False
+    other = OtherInfo.empty()
+
+    assert await poster_download(result, other, "", tmp_path, tmp_path / "poster.jpg") is True
+    assert result.image_download is True
+    assert other.poster_path == tmp_path / "poster.jpg"
+
+
+@pytest.mark.asyncio
+async def test_non_youma_prefers_direct_poster_before_crop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    async def fake_get_big_poster(*args, **kwargs):
+        return None
+
+    async def fake_download_file_with_filepath(url: str, file_path: Path, folder_path: Path):
+        assert url == "https://example.test/missav-og-image.jpg"
+        _save_test_image(file_path, (500, 750))
+        return True
+
+    monkeypatch.setattr(
+        manager.config,
+        "download_files",
+        [DownloadableFile.POSTER, DownloadableFile.THUMB],
+    )
+    monkeypatch.setattr(manager.config, "keep_files", [])
+    monkeypatch.setattr("mdcx.core.web._get_big_poster", fake_get_big_poster)
+    monkeypatch.setattr("mdcx.core.web.download_file_with_filepath", fake_download_file_with_filepath)
+    monkeypatch.setattr("mdcx.core.web._get_poster_copy_policy", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "mdcx.core.image.get_face_crop_left",
+        lambda image, crop_width, **kwargs: (_ for _ in ()).throw(AssertionError("不应进入裁剪")),
+    )
+
+    thumb_path = tmp_path / "thumb.jpg"
+    _save_test_image(thumb_path, (800, 500))
+
+    result = CrawlersResult.empty()
+    result.number = "050826_100"
+    result.mosaic = "无码"
+    result.scraping_type = FixedScrapingType.WUMA
+    result.poster = "https://example.test/missav-og-image.jpg"
+    result.poster_from = "missav"
+    result.image_download = False
+    other = OtherInfo.empty()
+    other.thumb_path = thumb_path
+
+    poster_path = tmp_path / "poster.jpg"
+    assert await poster_download(result, other, "", tmp_path, poster_path) is True
+    assert result.poster_from == "missav"
+    assert other.poster_path == poster_path
+
+
+@pytest.mark.asyncio
+async def test_non_youma_falls_back_to_crop_when_direct_poster_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    async def fake_get_big_poster(*args, **kwargs):
+        return None
+
+    async def fake_download_file_with_filepath(*args, **kwargs):
+        raise AssertionError("没有 poster 时不应先触发直下下载")
+
+    monkeypatch.setattr(manager.config, "download_files", [DownloadableFile.POSTER, DownloadableFile.THUMB])
+    monkeypatch.setattr(manager.config, "keep_files", [])
+    monkeypatch.setattr("mdcx.core.web._get_big_poster", fake_get_big_poster)
+    monkeypatch.setattr("mdcx.core.web.download_file_with_filepath", fake_download_file_with_filepath)
+    monkeypatch.setattr("mdcx.core.web._get_poster_copy_policy", lambda *args, **kwargs: False)
+    monkeypatch.setattr("mdcx.core.image.get_face_crop_left", lambda image, crop_width, **kwargs: 120)
+
+    thumb_path = tmp_path / "thumb.jpg"
+    _save_test_image(thumb_path, (800, 500))
+
+    result = CrawlersResult.empty()
+    result.number = "050826_100"
+    result.mosaic = "无码"
+    result.scraping_type = FixedScrapingType.OUMEI
+    result.poster = ""
+    result.poster_from = ""
+    result.image_download = False
+    other = OtherInfo.empty()
+    other.thumb_path = thumb_path
+
+    poster_path = tmp_path / "poster-fallback.jpg"
+    assert await poster_download(result, other, "", tmp_path, poster_path) is True
+    assert result.poster_from == "thumb face"
+    assert other.poster_path == poster_path
+    assert poster_path.exists()
+    with Image.open(poster_path) as img:
+        assert img.size == (333, 500)
+    assert other.poster_path == poster_path
+
+
+def test_cut_thumb_to_poster_uses_face_crop_for_non_youma(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    thumb_path = tmp_path / "thumb.jpg"
+    poster_path = tmp_path / "poster.jpg"
+    _save_test_image(thumb_path, (800, 500))
+
+    monkeypatch.setattr("mdcx.core.image.get_face_crop_left", lambda image, crop_width, **kwargs: 120)
+
+    result = CrawlersResult.empty()
+    result.scraping_type = FixedScrapingType.WUMA
+
+    assert cut_thumb_to_poster(result, thumb_path, poster_path, FixedScrapingType.WUMA) is True
+    assert result.poster_from == "thumb face"
+    assert poster_path.exists()
+    with Image.open(poster_path) as img:
+        assert img.size == (333, 500)
+
+
+def test_cut_thumb_to_poster_uses_concise_face_crop_log(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    thumb_path = tmp_path / "thumb.jpg"
+    poster_path = tmp_path / "poster.jpg"
+    logs: list[str] = []
+    _save_test_image(thumb_path, (800, 500))
+
+    def fake_face_crop(image, crop_width, log_fn=None):
+        if log_fn:
+            log_fn("\n 🖼 Poster裁剪: 人脸裁剪命中，使用 thumb face")
+        return 120
+
+    monkeypatch.setattr("mdcx.core.image.get_face_crop_left", fake_face_crop)
+
+    result = CrawlersResult.empty()
+    result.scraping_type = FixedScrapingType.WUMA
+
+    assert cut_thumb_to_poster(result, thumb_path, poster_path, FixedScrapingType.WUMA, logs.append) is True
+
+    log_text = "".join(logs)
+    assert "YuNet" not in log_text
+    assert "score=" not in log_text
+    assert "left=" not in log_text
+    assert "比例=" not in log_text
+    assert "人脸裁剪命中" in log_text
+
+
+def test_cut_thumb_to_poster_keeps_youma_right_crop_without_face_detection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    thumb_path = tmp_path / "thumb.jpg"
+    poster_path = tmp_path / "poster.jpg"
+    _save_test_image(thumb_path, (800, 500))
+
+    def _raise_face_detector(*args, **kwargs):
+        raise AssertionError("有码作品不应进入人脸裁剪")
+
+    monkeypatch.setattr("mdcx.core.image.get_face_crop_left", _raise_face_detector)
+
+    result = CrawlersResult.empty()
+    result.scraping_type = FixedScrapingType.YOUMA
+
+    assert cut_thumb_to_poster(result, thumb_path, poster_path, FixedScrapingType.YOUMA) is True
+    assert result.poster_from == "thumb right"
+
+
+def test_cut_thumb_to_poster_keeps_ratio_priority_for_youma(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    thumb_path = tmp_path / "thumb.jpg"
+    poster_path = tmp_path / "poster.jpg"
+    _save_test_image(thumb_path, (500, 600))
+
+    def _raise_face_detector(*args, **kwargs):
+        raise AssertionError("有码偏竖图应优先居中裁剪，不应进入人脸裁剪")
+
+    monkeypatch.setattr("mdcx.core.image.get_face_crop_left", _raise_face_detector)
+
+    result = CrawlersResult.empty()
+    result.scraping_type = FixedScrapingType.YOUMA
+
+    assert cut_thumb_to_poster(result, thumb_path, poster_path, FixedScrapingType.YOUMA) is True
+    assert result.poster_from == "thumb center"
+    with Image.open(poster_path) as img:
+        assert img.size == (400, 600)
+
+
+@pytest.mark.parametrize(
+    "scraping_type,download_file",
+    [
+        (FixedScrapingType.YOUMA, DownloadableFile.IGNORE_YOUMA),
+        (FixedScrapingType.WUMA, DownloadableFile.IGNORE_WUMA),
+        (FixedScrapingType.FC2, DownloadableFile.IGNORE_FC2),
+        (FixedScrapingType.OUMEI, DownloadableFile.IGNORE_OUMEI),
+        (FixedScrapingType.GUOCHAN, DownloadableFile.IGNORE_GUOCHAN),
+    ],
+)
+def test_get_poster_copy_policy_uses_explicit_type_mapping(
+    scraping_type: FixedScrapingType, download_file: DownloadableFile
+):
+    result = CrawlersResult.empty()
+    result.scraping_type = scraping_type
+
+    assert _get_poster_copy_policy(result, [download_file]) is True
+
+
+@pytest.mark.parametrize(
+    "scraping_type", [FixedScrapingType.WUMA, FixedScrapingType.FC2, FixedScrapingType.SUREN, FixedScrapingType.AUTO]
+)
+def test_non_youma_types_try_direct_poster(scraping_type: FixedScrapingType):
+    result = CrawlersResult.empty()
+    result.scraping_type = scraping_type
+    result.image_download = False
+
+    assert _should_try_direct_poster(result, poster_auto_best=False) is True
+
+
+@pytest.mark.asyncio
+async def test_oumei_uses_separate_ignore_copy_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    async def fake_get_big_poster(*args, **kwargs):
+        return None
+
+    async def fake_download_file_with_filepath(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(manager.config, "keep_files", [])
+    monkeypatch.setattr("mdcx.core.web._get_big_poster", fake_get_big_poster)
+    monkeypatch.setattr("mdcx.core.web.download_file_with_filepath", fake_download_file_with_filepath)
+
+    thumb_path = tmp_path / "thumb.jpg"
+    _save_test_image(thumb_path, (800, 500))
+
+    result = CrawlersResult.empty()
+    result.number = "example.26.05.09"
+    result.mosaic = "无码"
+    result.scraping_type = FixedScrapingType.OUMEI
+    other = OtherInfo.empty()
+    other.thumb_path = thumb_path
+
+    monkeypatch.setattr(
+        manager.config,
+        "download_files",
+        [DownloadableFile.POSTER, DownloadableFile.THUMB, DownloadableFile.IGNORE_WUMA],
+    )
+    poster_path = tmp_path / "poster-wuma-option.jpg"
+    assert await poster_download(result, other, "", tmp_path, poster_path) is True
+    assert result.poster_from == "thumb center"
+
+    result.poster_from = ""
+    other.poster_path = None
+    monkeypatch.setattr(
+        manager.config,
+        "download_files",
+        [DownloadableFile.POSTER, DownloadableFile.THUMB, DownloadableFile.IGNORE_OUMEI],
+    )
+    poster_path = tmp_path / "poster-oumei-option.jpg"
+    assert await poster_download(result, other, "", tmp_path, poster_path) is True
+    assert result.poster_from == "copy thumb"
+    assert other.poster_path == poster_path
+
+
 @pytest.mark.asyncio
 async def test_get_big_poster_uses_amazon_only_for_non_suren_censored(monkeypatch: pytest.MonkeyPatch):
     called = False
 
-    async def fake_get_big_pic_by_amazon(*args, **kwargs):
+    async def fake_get_big_pic_by_amazon(result: CrawlersResult, *args, **kwargs):
         nonlocal called
         called = True
+        result.amazon_match_is_hard = True
         return "https://m.media-amazon.com/images/I/81poster.jpg"
 
     monkeypatch.setattr(manager.config, "download_hd_pics", [HDPicSource.POSTER, HDPicSource.AMAZON])
@@ -41,6 +373,7 @@ async def test_get_big_poster_uses_amazon_only_for_non_suren_censored(monkeypatc
 
     result = CrawlersResult.empty()
     result.mosaic = "有码"
+    result.scraping_type = FixedScrapingType.YOUMA
     result.originaltitle_amazon = "测试标题"
     other = OtherInfo.empty()
 
@@ -52,20 +385,47 @@ async def test_get_big_poster_uses_amazon_only_for_non_suren_censored(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_get_big_poster_uses_amazon_for_youma_restored(monkeypatch: pytest.MonkeyPatch):
+    called = False
+
+    async def fake_get_big_pic_by_amazon(result: CrawlersResult, *args, **kwargs):
+        nonlocal called
+        called = True
+        result.amazon_match_is_hard = True
+        return "https://m.media-amazon.com/images/I/81restored.jpg"
+
+    monkeypatch.setattr(manager.config, "download_hd_pics", [HDPicSource.POSTER, HDPicSource.AMAZON])
+    monkeypatch.setattr("mdcx.core.web.get_big_pic_by_amazon", fake_get_big_pic_by_amazon)
+
+    result = CrawlersResult.empty()
+    result.mosaic = "无码破解"
+    result.scraping_type = FixedScrapingType.YOUMA
+    result.originaltitle_amazon = "破解标题"
+    other = OtherInfo.empty()
+
+    await _get_big_poster(result, other)
+
+    assert called is True
+    assert result.poster == "https://m.media-amazon.com/images/I/81restored.jpg"
+    assert result.poster_from == "Amazon"
+
+
+@pytest.mark.asyncio
 async def test_get_big_poster_keeps_original_amazon_whitelist(monkeypatch: pytest.MonkeyPatch):
     called = False
 
-    async def fake_get_big_pic_by_amazon(*args, **kwargs):
+    async def fake_get_big_pic_by_amazon(result: CrawlersResult, *args, **kwargs):
         nonlocal called
         called = True
+        result.amazon_match_is_hard = True
         return "https://m.media-amazon.com/images/I/81poster.jpg"
 
     monkeypatch.setattr(manager.config, "download_hd_pics", [HDPicSource.POSTER, HDPicSource.AMAZON])
     monkeypatch.setattr("mdcx.core.web.get_big_pic_by_amazon", fake_get_big_pic_by_amazon)
 
     result = CrawlersResult.empty()
-    result.mosaic = "流出"
-    result.originaltitle_amazon = "流出标题"
+    result.mosaic = "里番"
+    result.originaltitle_amazon = "里番标题"
     other = OtherInfo.empty()
 
     await _get_big_poster(result, other)
@@ -89,8 +449,36 @@ async def test_get_big_poster_skips_amazon_for_suren(monkeypatch: pytest.MonkeyP
 
     result = CrawlersResult.empty()
     result.mosaic = "有码"
-    result.is_suren = True
+    result.scraping_type = FixedScrapingType.SUREN
     result.originaltitle_amazon = "素人标题"
+    other = OtherInfo.empty()
+
+    await _get_big_poster(result, other)
+
+    assert called is False
+    assert result.poster == ""
+    assert result.poster_from == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scraping_type", [FixedScrapingType.FC2, FixedScrapingType.WUMA])
+async def test_get_big_poster_skips_amazon_for_fc2_and_wuma(
+    monkeypatch: pytest.MonkeyPatch, scraping_type: FixedScrapingType
+):
+    called = False
+
+    async def fake_get_big_pic_by_amazon(*args, **kwargs):
+        nonlocal called
+        called = True
+        return "https://m.media-amazon.com/images/I/81poster.jpg"
+
+    monkeypatch.setattr(manager.config, "download_hd_pics", [HDPicSource.POSTER, HDPicSource.AMAZON])
+    monkeypatch.setattr("mdcx.core.web.get_big_pic_by_amazon", fake_get_big_pic_by_amazon)
+
+    result = CrawlersResult.empty()
+    result.mosaic = "无码" if scraping_type == FixedScrapingType.WUMA else "有码"
+    result.scraping_type = scraping_type
+    result.originaltitle_amazon = "测试标题"
     other = OtherInfo.empty()
 
     await _get_big_poster(result, other)
@@ -114,6 +502,7 @@ async def test_get_big_poster_skips_amazon_for_non_censored(monkeypatch: pytest.
 
     result = CrawlersResult.empty()
     result.mosaic = "无码"
+    result.scraping_type = FixedScrapingType.WUMA
     result.originaltitle_amazon = "无码标题"
     other = OtherInfo.empty()
 
@@ -122,6 +511,92 @@ async def test_get_big_poster_skips_amazon_for_non_censored(monkeypatch: pytest.
     assert called is False
     assert result.poster == ""
     assert result.poster_from == ""
+
+
+@pytest.mark.asyncio
+async def test_get_big_poster_rejects_soft_amazon_without_reference(monkeypatch: pytest.MonkeyPatch):
+    async def fake_get_big_pic_by_amazon(result: CrawlersResult, *args, **kwargs):
+        result.amazon_match_is_hard = False
+        return "https://m.media-amazon.com/images/I/81soft.jpg"
+
+    monkeypatch.setattr(manager.config, "download_hd_pics", [HDPicSource.POSTER, HDPicSource.AMAZON])
+    monkeypatch.setattr("mdcx.core.web.get_big_pic_by_amazon", fake_get_big_pic_by_amazon)
+
+    result = CrawlersResult.empty()
+    result.mosaic = "有码"
+    result.scraping_type = FixedScrapingType.YOUMA
+    result.originaltitle_amazon = "测试标题"
+    other = OtherInfo.empty()
+
+    await _get_big_poster(result, other)
+
+    assert result.poster == ""
+    assert result.poster_from == ""
+    assert result.image_download is False
+
+
+@pytest.mark.asyncio
+async def test_get_big_poster_accepts_soft_amazon_when_image_similarity_passes(monkeypatch: pytest.MonkeyPatch):
+    async def fake_get_big_pic_by_amazon(result: CrawlersResult, *args, **kwargs):
+        result.amazon_match_is_hard = False
+        return "https://m.media-amazon.com/images/I/81soft.jpg"
+
+    async def fake_verify(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(manager.config, "download_hd_pics", [HDPicSource.POSTER, HDPicSource.AMAZON])
+    monkeypatch.setattr("mdcx.core.web.get_big_pic_by_amazon", fake_get_big_pic_by_amazon)
+    monkeypatch.setattr("mdcx.core.web._verify_soft_amazon_poster", fake_verify)
+
+    result = CrawlersResult.empty()
+    result.mosaic = "有码"
+    result.scraping_type = FixedScrapingType.YOUMA
+    result.originaltitle_amazon = "测试标题"
+    other = OtherInfo.empty()
+
+    await _get_big_poster(result, other)
+
+    assert result.poster == "https://m.media-amazon.com/images/I/81soft.jpg"
+    assert result.poster_from == "Amazon"
+    assert result.image_download is True
+
+
+@pytest.mark.asyncio
+async def test_get_big_poster_continues_google_after_low_res_amazon_match(monkeypatch: pytest.MonkeyPatch):
+    async def fake_get_big_pic_by_amazon(result: CrawlersResult, *args, **kwargs):
+        result.poster = "https://m.media-amazon.com/images/I/51lowres.jpg"
+        result.poster_from = "Amazon"
+        result.amazon_match_is_hard = True
+        return ""
+
+    async def fake_get_big_pic_by_google(pic_url: str, **kwargs):
+        assert pic_url == "https://m.media-amazon.com/images/I/51lowres.jpg"
+        return "https://cdn.example.test/81google.jpg", (1200, 1800)
+
+    async def fake_get_image_size(url: str, media_context=None):
+        assert url == "https://m.media-amazon.com/images/I/51lowres.jpg"
+        return (500, 750)
+
+    monkeypatch.setattr(
+        manager.config, "download_hd_pics", [HDPicSource.POSTER, HDPicSource.AMAZON, HDPicSource.GOOGLE]
+    )
+    monkeypatch.setattr("mdcx.core.web.get_big_pic_by_amazon", fake_get_big_pic_by_amazon)
+    monkeypatch.setattr("mdcx.core.web.get_big_pic_by_google", fake_get_big_pic_by_google)
+    monkeypatch.setattr("mdcx.core.web._get_image_size", fake_get_image_size)
+
+    result = CrawlersResult.empty()
+    result.mosaic = "有码"
+    result.scraping_type = FixedScrapingType.YOUMA
+    result.originaltitle_amazon = "测试标题"
+    result.poster = "https://example.test/original.jpg"
+    result.poster_from = "crawler"
+    other = OtherInfo.empty()
+
+    await _get_big_poster(result, other)
+
+    assert result.poster == "https://cdn.example.test/81google.jpg"
+    assert result.poster_from == "Google(cdn.example.test)"
+    assert result.image_download is True
 
 
 @pytest.mark.asyncio
@@ -1148,7 +1623,7 @@ async def test_get_big_pic_by_amazon_barcode_fast_path_skips_title_search(monkey
     """
     queries: list[str] = []
 
-    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult):
+    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult, *_args, **_kwargs):
         return [barcode]
 
     async def fake_get_amazon_data(req_url: str):
@@ -1209,7 +1684,7 @@ async def test_get_big_pic_by_amazon_barcode_fast_path_prefers_dvd_over_bluray(m
     </html>
     """
 
-    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult):
+    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult, *_args, **_kwargs):
         return [barcode]
 
     async def fake_get_amazon_data(req_url: str):
@@ -1273,7 +1748,7 @@ async def test_get_big_pic_by_amazon_barcode_fast_path_falls_back_to_title_searc
     """
     queries: list[str] = []
 
-    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult):
+    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult, *_args, **_kwargs):
         return [barcode]
 
     async def fake_get_amazon_data(req_url: str):
@@ -1340,7 +1815,7 @@ async def test_get_big_pic_by_amazon_barcode_fast_path_tries_next_barcode_candid
     """
     queries: list[str] = []
 
-    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult):
+    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult, *_args, **_kwargs):
         return [first_barcode, second_barcode]
 
     async def fake_get_amazon_data(req_url: str):
@@ -1420,6 +1895,42 @@ async def test_try_get_amazon_barcode_from_covers_logs_ocr_fallback_hit(monkeypa
     assert "Amazon条码识别：OCR回退命中 EAN/JAN 4549831546432 (dmm) 候选2个" in logs
 
 
+@pytest.mark.asyncio
+async def test_try_get_amazon_barcode_from_covers_reuses_media_context(monkeypatch: pytest.MonkeyPatch):
+    from mdcx.core.media_resource import MediaResourceContext
+
+    class _FakeResponse:
+        def __init__(self, url: str, content: bytes):
+            self.url = url
+            self.content = content
+
+    calls: list[str] = []
+
+    async def fake_request(method: str, url: str, **kwargs):
+        assert method == "GET"
+        calls.append(url)
+        return _FakeResponse(url, b"fake-image"), ""
+
+    monkeypatch.setattr(manager.computed.async_client, "request", fake_request)
+    monkeypatch.setattr(
+        "mdcx.core.amazon._detect_amazon_barcode_candidates_from_image_bytes_with_reason",
+        lambda _content: (["4549831546432"], "direct"),
+    )
+
+    result = CrawlersResult.empty()
+    result.thumb_from = "dmm"
+    result.thumb = "https://example.com/club00614pl.jpg"
+
+    context = MediaResourceContext()
+    try:
+        assert await try_get_amazon_barcode_from_covers(result, context) == "4549831546432"
+        assert await try_get_amazon_barcode_from_covers(result, context) == "4549831546432"
+    finally:
+        context.close()
+
+    assert calls == ["https://example.com/club00614pl.jpg"]
+
+
 def test_beam_search_amazon_ean13_prefers_checksum_valid_candidate():
     target = "4549831546432"
     ranked_digits: list[list[tuple[float, str]]] = [[(0.95, digit), (0.90, "0")] for digit in target]
@@ -1451,7 +1962,7 @@ async def test_get_big_pic_by_amazon_logs_barcode_skip_before_title_fallback(mon
     """
     queries: list[str] = []
 
-    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult):
+    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult, *_args, **_kwargs):
         return []
 
     async def fake_get_amazon_data(req_url: str):
@@ -1635,7 +2146,7 @@ async def test_get_big_pic_by_amazon_rejects_multi_actor_compilation_without_num
     </html>
     """
 
-    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult):
+    async def fake_try_get_amazon_barcodes_from_covers(_result: CrawlersResult, *_args, **_kwargs):
         return []
 
     async def fake_get_amazon_data(req_url: str):

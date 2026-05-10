@@ -6800,8 +6800,17 @@
                             <property name="styleSheet">
                               <string notr="true">color: rgb(8, 128, 128);</string>
                             </property>
+                            <property name="maximumSize">
+                              <size>
+                                <width>16777215</width>
+                                <height>42</height>
+                              </size>
+                            </property>
                             <property name="text">
-                              <string>&lt;p&gt;「网站偏好」-「指定网站」指定 mdtv、hdouban，或文件路径含有「国产」、「麻豆」时，将自动使用以上网站刮削国产番号&lt;/p&gt;</string>
+                              <string>&lt;span&gt;「网站偏好」-「指定网站」指定 mdtv、hdouban，或文件路径含有「国产」、「麻豆」时，将自动使用以上网站刮削国产番号&lt;/span&gt;</string>
+                            </property>
+                            <property name="alignment">
+                              <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
                             </property>
                             <property name="wordWrap">
                               <bool>true</bool>
@@ -8865,7 +8874,7 @@
                       <x>0</x>
                       <y>0</y>
                       <width>760</width>
-                      <height>1870</height>
+                      <height>1900</height>
                     </rect>
                   </property>
                   <widget class="QGroupBox" name="groupBox_24">
@@ -8874,7 +8883,7 @@
                         <x>30</x>
                         <y>20</y>
                         <width>701</width>
-                        <height>451</height>
+                        <height>481</height>
                       </rect>
                     </property>
                     <property name="minimumSize">
@@ -8946,7 +8955,7 @@
                           <x>60</x>
                           <y>210</y>
                           <width>621</width>
-                          <height>208</height>
+                        <height>238</height>
                         </rect>
                       </property>
                       <layout class="QVBoxLayout" name="verticalLayout_2">
@@ -9029,9 +9038,9 @@
                           </layout>
                         </item>
                         <item>
-                          <layout class="QHBoxLayout" name="horizontalLayout_youma_use_poster">
+                          <layout class="QHBoxLayout" name="horizontalLayout_poster_auto_best">
                             <item>
-                              <widget class="QCheckBox" name="checkBox_youma_use_poster">
+                              <widget class="QCheckBox" name="checkBox_poster_auto_best">
                                 <property name="sizePolicy">
                                   <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
                                     <horstretch>0</horstretch>
@@ -9045,12 +9054,12 @@
                                   </size>
                                 </property>
                                 <property name="text">
-                                  <string>有码优先使用 Poster，不按 SOD/VR 判定</string>
+                                  <string>有码 Poster 竖图按大小自动选优</string>
                                 </property>
                               </widget>
                             </item>
                             <item>
-                              <widget class="QLabel" name="label_youma_use_poster">
+                              <widget class="QLabel" name="label_poster_auto_best">
                                 <property name="sizePolicy">
                                   <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
                                     <horstretch>0</horstretch>
@@ -9061,7 +9070,7 @@
                                   <string notr="true">color: rgb(8, 128, 128);</string>
                                 </property>
                                 <property name="text">
-                                  <string> 有码封面默认直下 Poster（ps.jpg），失败后仍会回退裁剪</string>
+                                  <string> 仅有码：直下/搜图/右裁剪选优</string>
                                 </property>
                               </widget>
                             </item>
@@ -9084,7 +9093,7 @@
                                   </size>
                                 </property>
                                 <property name="text">
-                                  <string>无码（含欧美）封面不裁剪，直接复制缩略图</string>
+                                  <string>无码封面不裁剪，直接复制缩略图</string>
                                 </property>
                               </widget>
                             </item>
@@ -9101,6 +9110,45 @@
                                 </property>
                                 <property name="text">
                                   <string> 无码封面人脸位置不固定，建议手动裁剪或直接复制</string>
+                                </property>
+                              </widget>
+                            </item>
+                          </layout>
+                        </item>
+                        <item>
+                          <layout class="QHBoxLayout" name="horizontalLayout_ignore_oumei">
+                            <item>
+                              <widget class="QCheckBox" name="checkBox_ignore_oumei">
+                                <property name="sizePolicy">
+                                  <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                                    <horstretch>0</horstretch>
+                                    <verstretch>0</verstretch>
+                                  </sizepolicy>
+                                </property>
+                                <property name="minimumSize">
+                                  <size>
+                                    <width>30</width>
+                                    <height>0</height>
+                                  </size>
+                                </property>
+                                <property name="text">
+                                  <string>欧美封面不裁剪，直接复制缩略图</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item>
+                              <widget class="QLabel" name="label_ignore_oumei">
+                                <property name="sizePolicy">
+                                  <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                                    <horstretch>0</horstretch>
+                                    <verstretch>0</verstretch>
+                                  </sizepolicy>
+                                </property>
+                                <property name="styleSheet">
+                                  <string notr="true">color: rgb(8, 128, 128);</string>
+                                </property>
+                                <property name="text">
+                                  <string> 欧美封面人脸位置不固定，建议手动裁剪或直接复制</string>
                                 </property>
                               </widget>
                             </item>
@@ -9293,7 +9341,7 @@
                       <property name="geometry">
                         <rect>
                           <x>60</x>
-                          <y>410</y>
+                        <y>440</y>
                           <width>621</width>
                           <height>41</height>
                         </rect>
@@ -9335,7 +9383,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>490</y>
+                        <y>520</y>
                         <width>701</width>
                         <height>131</height>
                       </rect>
@@ -9454,7 +9502,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>1560</y>
+                        <y>1590</y>
                         <width>701</width>
                         <height>211</height>
                       </rect>
@@ -9551,7 +9599,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>1280</y>
+                        <y>1310</y>
                         <width>701</width>
                         <height>261</height>
                       </rect>
@@ -9687,7 +9735,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>640</y>
+                        <y>670</y>
                         <width>701</width>
                         <height>401</height>
                       </rect>
@@ -10048,7 +10096,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>1060</y>
+                        <y>1090</y>
                         <width>701</width>
                         <height>201</height>
                       </rect>
@@ -13003,7 +13051,7 @@
                       <x>0</x>
                       <y>0</y>
                       <width>760</width>
-                      <height>2750</height>
+                      <height>2630</height>
                     </rect>
                   </property>
                   <widget class="QGroupBox" name="groupBox_trans">
@@ -13619,7 +13667,7 @@
                         <x>30</x>
                         <y>871</y>
                         <width>701</width>
-                        <height>250</height>
+                        <height>130</height>
                       </rect>
                     </property>
                     <property name="minimumSize">
@@ -13643,26 +13691,12 @@
                           <x>20</x>
                           <y>30</y>
                           <width>661</width>
-                          <height>211</height>
+                          <height>91</height>
                         </rect>
                       </property>
                       <layout class="QGridLayout" name="gridLayout_45">
                         <item row="2" column="1">
                           <layout class="QHBoxLayout" name="horizontalLayout_2">
-                            <item>
-                              <widget class="QCheckBox" name="checkBox_title_sehua">
-                                <property name="text">
-                                  <string>使用色花中文标题</string>
-                                </property>
-                              </widget>
-                            </item>
-                            <item>
-                              <widget class="QCheckBox" name="checkBox_title_yesjav">
-                                <property name="text">
-                                  <string>使用yesjav中文标题</string>
-                                </property>
-                              </widget>
-                            </item>
                             <item>
                               <widget class="QCheckBox" name="checkBox_title_translate">
                                 <property name="text">
@@ -13744,45 +13778,6 @@
                             </item>
                           </layout>
                         </item>
-                        <item row="5" column="1">
-                          <widget class="QLabel" name="label_236">
-                            <property name="sizePolicy">
-                              <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
-                                <horstretch>0</horstretch>
-                                <verstretch>0</verstretch>
-                              </sizepolicy>
-                            </property>
-                            <property name="styleSheet">
-                              <string notr="true">color: rgb(8, 128, 128);</string>
-                            </property>
-                            <property name="text">
-                              <string>当存在色花中文标题时，即使刮削网站有中文翻译，也会使用色花中文标题</string>
-                            </property>
-                          </widget>
-                        </item>
-                        <item row="3" column="1">
-                          <widget class="QLabel" name="label_160">
-                            <property name="sizePolicy">
-                              <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
-                                <horstretch>0</horstretch>
-                                <verstretch>0</verstretch>
-                              </sizepolicy>
-                            </property>
-                            <property name="styleSheet">
-                              <string notr="true">color: rgb(8, 128, 128);</string>
-                            </property>
-                            <property name="text">
-                              <string>翻译优先级：色花（内置标题数据） &gt; yesjav（在线色花数据） &gt; 翻译引擎</string>
-                            </property>
-                          </widget>
-                        </item>
-                        <item row="4" column="1">
-                          <widget class="QCheckBox" name="checkBox_title_sehua_2">
-                            <property name="text">
-                              <string>优先使用色花中文标题</string>
-                            </property>
-                          </widget>
-                        </item>
                         <item row="2" column="0">
                           <widget class="QLabel" name="label_244">
                             <property name="sizePolicy">
@@ -13818,7 +13813,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>1141</y>
+                        <y>1021</y>
                         <width>701</width>
                         <height>220</height>
                       </rect>
@@ -14059,7 +14054,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>1381</y>
+                        <y>1261</y>
                         <width>701</width>
                         <height>420</height>
                       </rect>
@@ -14236,7 +14231,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>1821</y>
+                        <y>1701</y>
                         <width>701</width>
                         <height>151</height>
                       </rect>
@@ -14383,7 +14378,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>1992</y>
+                        <y>1872</y>
                         <width>701</width>
                         <height>151</height>
                       </rect>
@@ -14530,7 +14525,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>2163</y>
+                        <y>2043</y>
                         <width>701</width>
                         <height>151</height>
                       </rect>
@@ -14677,7 +14672,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>2334</y>
+                        <y>2214</y>
                         <width>701</width>
                         <height>151</height>
                       </rect>
@@ -14824,7 +14819,7 @@
                     <property name="geometry">
                       <rect>
                         <x>30</x>
-                        <y>2505</y>
+                        <y>2385</y>
                         <width>701</width>
                         <height>151</height>
                       </rect>

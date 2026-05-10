@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass, field
 from re import Pattern
 
+from mdcx.core.mosaic import normalize_mosaic
 from mdcx.models.types import CrawlerDebugInfo, CrawlerInput, CrawlerResult
 from mdcx.utils.dataclass import update_valid
 
@@ -61,7 +62,6 @@ class CrawlerData:
     trailer: FieldValue = NOT_SUPPORT
     wanted: FieldValue = NOT_SUPPORT
     year: FieldValue = NOT_SUPPORT
-    image_cut: FieldValue = NOT_SUPPORT
     image_download: FieldValue[bool] = NOT_SUPPORT
     number: FieldValue = NOT_SUPPORT
     mosaic: FieldValue = NOT_SUPPORT
@@ -69,7 +69,9 @@ class CrawlerData:
     source: FieldValue = NOT_SUPPORT
 
     def to_result(self) -> "CrawlerResult":
-        return update_valid(CrawlerResult.empty(), self, is_valid)
+        result = update_valid(CrawlerResult.empty(), self, is_valid)
+        result.mosaic = normalize_mosaic(result.mosaic)
+        return result
 
 
 class CralwerException(Exception): ...

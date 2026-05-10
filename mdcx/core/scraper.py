@@ -21,7 +21,7 @@ from ..base.file import (
     save_success_list,
 )
 from ..base.image import extrafanart_copy2, extrafanart_extras_copy
-from ..config.enums import DownloadableFile, EmbyAction, ReadMode, Switch
+from ..config.enums import DownloadableFile, EmbyAction, FixedScrapingType, ReadMode, Switch
 from ..config.extend import get_movie_path_setting
 from ..config.manager import manager
 from ..config.resources import resources
@@ -38,8 +38,9 @@ from ..utils.dataclass import update
 from ..utils.file import copy_file_async, move_file_async
 from ..utils.path import is_descendant
 from .file import creat_folder, deal_old_files, get_file_info_v2, get_output_name, move_movie
-from .file_crawler import FileScraper
+from .file_crawler import FileScraper, classify_existing_scrape_result, classify_scrape_task
 from .image import add_mark
+from .media_resource import MediaResourceContext
 from .nfo import get_nfo_data, write_nfo
 from .translate import translate_actor, translate_info, translate_title_outline
 from .utils import (
@@ -537,6 +538,7 @@ class Scraper:
 
         is_nfo_existed = False
         res = CrawlersResult.empty()  # todo 保证所有路径上均有 res 值
+        file_classification = None
         # 读取模式
         file_can_download = True
         if manager.config.main_mode == 4:
@@ -545,6 +547,7 @@ class Scraper:
                 is_nfo_existed = True
                 res = nfo_data
                 movie_number = nfo_data.number
+                file_classification = classify_existing_scrape_result(file_info.crawl_task(), res, manager.config)
                 if "has_nfo_update" not in read_mode:  # 不更新并返回
                     show_result(res, start_time)
                     show_movie_info(file_info, nfo_data)
@@ -586,7 +589,9 @@ class Scraper:
 
         # 刮削json_data
         # 获取已刮削的json_data
-        enable_shared_json = "." not in movie_number and file_info.mosaic not in ["国产"]
+        if file_classification is None:
+            file_classification = classify_scrape_task(file_info.crawl_task(), manager.config)
+        enable_shared_json = "." not in movie_number and file_classification.scraping_type != FixedScrapingType.GUOCHAN
         if enable_shared_json:
             if movie_number not in Flags.json_get_status:
                 # 第一次遇到该番号，标记为“正在刮削”
@@ -786,15 +791,23 @@ class Scraper:
         # 如果 final_pic_path 没处理过，这时才需要下载和加水印
         if pic_final_catched and file_can_download:
             # 下载thumb
-            if not await thumb_download(res, other, file_info.cd_part, folder_new_path, thumb_final_path):
-                return None, None
+            media_context = MediaResourceContext()
+            try:
+                if not await thumb_download(
+                    res, other, file_info.cd_part, folder_new_path, thumb_final_path, media_context
+                ):
+                    return None, None
 
-            # 下载艺术图
-            await fanart_download(res.number, other, file_info.cd_part, fanart_final_path)
+                # 下载艺术图
+                await fanart_download(res.number, other, file_info.cd_part, fanart_final_path)
 
-            # 下载poster
-            if not await poster_download(res, other, file_info.cd_part, folder_new_path, poster_final_path):
-                return None, None
+                # 下载poster
+                if not await poster_download(
+                    res, other, file_info.cd_part, folder_new_path, poster_final_path, media_context
+                ):
+                    return None, None
+            finally:
+                media_context.close()
 
             # 清理冗余图片
             await pic_some_deal(res.number, thumb_final_path, fanart_final_path)
@@ -876,7 +889,10 @@ def start_new_scrape(file_mode: FileMode, movie_list: list[Path] | None = None) 
     signal.exec_set_processbar.emit(0)
     try:
         Flags.start_time = time.time()
-        crawler_provider = CrawlerProvider(manager.config, manager.computed.async_client)
+        with manager.acquire_computed() as computed:
+            crawler_provider = CrawlerProvider(
+                manager.config, computed.async_client, config_getter=lambda: manager.config
+            )
         scraper = Scraper(crawler_provider)
         executor.submit(scraper.run(file_mode, movie_list))
     except Exception:

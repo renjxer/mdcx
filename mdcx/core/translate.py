@@ -1,7 +1,6 @@
 import random
 import re
 import time
-import traceback
 
 import zhconv
 
@@ -9,17 +8,37 @@ from ..base.translate import (
     get_translator_skip_reason,
     translate_with_engine,
 )
-from ..base.web import get_actorname, get_yesjav_title
-from ..config.enums import FieldRule, Language, TagInclude
+from ..base.web import get_actorname
+from ..config.enums import FieldRule, FixedScrapingType, Language, TagInclude
 from ..config.manager import manager
 from ..config.resources import resources
 from ..gen.field_enums import CrawlerResultFields
 from ..models.log_buffer import LogBuffer
 from ..models.types import CrawlersResult
 from ..number import get_number_letters
-from ..signals import signal
 from ..utils import clean_list, get_used_time
 from ..utils.language import is_japanese, is_probably_english_for_translation
+from .mosaic import normalize_mosaic
+
+AVWIKI_SCRAPING_TYPES = {
+    FixedScrapingType.YOUMA,
+    FixedScrapingType.SUREN,
+    FixedScrapingType.FC2,
+}
+
+
+def _has_unknown_or_empty_actor(res: CrawlersResult) -> bool:
+    unknown_actor = manager.config.actor_no_name.strip()
+    actors = [actor.strip() for actor in res.actors if actor.strip()]
+    if not actors:
+        return True
+    return len(actors) == 1 and actors[0] == unknown_actor
+
+
+def _should_query_avwiki_actor(res: CrawlersResult) -> bool:
+    if res.scraping_type == FixedScrapingType.YOUMA:
+        return _has_unknown_or_empty_actor(res)
+    return res.scraping_type in AVWIKI_SCRAPING_TYPES
 
 
 def translate_info(json_data: CrawlersResult, has_sub: bool):
@@ -101,7 +120,8 @@ def translate_info(json_data: CrawlersResult, has_sub: bool):
         tag = tag.strip(",")
 
     # 添加字幕、马赛克信息到tag中
-    mosaic = json_data.mosaic
+    mosaic = normalize_mosaic(json_data.mosaic)
+    json_data.mosaic = mosaic
     if has_sub and TagInclude.CNWORD in tag_include:
         tag += ",中文字幕"
     if mosaic and TagInclude.MOSAIC in tag_include:
@@ -171,15 +191,11 @@ def translate_info(json_data: CrawlersResult, has_sub: bool):
 async def translate_actor(res: CrawlersResult):
     # 网络请求真实的演员名字
     actor_realname = manager.config.actor_realname
-    mosaic = res.mosaic
-    number = res.number
 
     # 非读取模式，勾选了使用真实名字时; 读取模式，勾选了允许更新真实名字时
     if actor_realname:
         start_time = time.time()
-        if mosaic != "国产" and (
-            number.startswith("FC2") or number.startswith("SIRO") or re.search(r"\d{3,}[A-Z]{3,}-", number)
-        ):
+        if _should_query_avwiki_actor(res):
             result, temp_actor = await get_actorname(res.number)
             if result:
                 actor: str = res.actor
@@ -242,9 +258,6 @@ async def translate_title_outline(json_data: CrawlersResult, cd_part: str, movie
         return
     trans_title = ""
     trans_outline = ""
-    title_sehua = manager.config.title_sehua
-    title_sehua_zh = manager.config.title_sehua_zh
-    title_yesjav = manager.config.title_yesjav
     title_is_jp = is_japanese(json_data.title)
     title_is_en = is_probably_english_for_translation(json_data.title)
     title_translation_applied = False
@@ -252,30 +265,8 @@ async def translate_title_outline(json_data: CrawlersResult, cd_part: str, movie
 
     # 处理title
     if title_language != Language.JP:
-        movie_title = ""
-
-        # 匹配本地高质量标题(色花标题数据)
-        if title_sehua_zh or (title_is_jp and title_sehua):
-            start_time = time.time()
-            try:
-                movie_title = resources.sehua_title_data.get(movie_number)
-            except Exception:
-                signal.show_traceback_log(traceback.format_exc())
-                signal.show_log_text(traceback.format_exc())
-            if movie_title:
-                json_data.title = movie_title
-                LogBuffer.log().write(f"\n 🌸 Sehua title done!({get_used_time(start_time)}s)")
-
-        # 匹配网络高质量标题（yesjav， 可在线更新）
-        if not movie_title and title_yesjav and title_is_jp:
-            start_time = time.time()
-            movie_title = await get_yesjav_title(movie_number)
-            if movie_title and not is_japanese(movie_title):
-                json_data.title = movie_title
-                LogBuffer.log().write(f"\n 🆈 Yesjav title done!({get_used_time(start_time)}s)")
-
         # 使用json_data数据
-        if not movie_title and title_translate and (title_is_jp or title_is_en):
+        if title_translate and (title_is_jp or title_is_en):
             trans_title = json_data.title
 
     # 处理outline

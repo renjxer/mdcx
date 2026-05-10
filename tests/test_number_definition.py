@@ -39,6 +39,7 @@ def test_get_file_number_normalizes_uncensored_digit_numbers(raw_number: str, ex
         (r"D:/test/LUXU-1488.mp4", "259LUXU-1488"),
         (r"D:/test/SCUTE-953.mp4", "229SCUTE-953"),
         (r"D:/test/MAAN-673.mp4", "300MAAN-673"),
+        (r"D:/test/ARA-094.mp4", "261ARA-094"),
     ],
 )
 def test_get_file_number_normalizes_suren_numbers(raw_number: str, expected_number: str):
@@ -50,6 +51,7 @@ def test_get_file_number_normalizes_suren_numbers(raw_number: str, expected_numb
     [
         (r"D:/test/DANDY-818.mp4", "DANDY-818"),
         (r"D:/test/KIWVR-254.mp4", "KIWVR-254"),
+        (r"D:/test/GARA-022.mp4", "GARA-022"),
     ],
 )
 def test_get_file_number_keeps_non_suren_prefixes(raw_number: str, expected_number: str):
@@ -75,6 +77,9 @@ def test_get_file_number_keeps_non_suren_prefixes(raw_number: str, expected_numb
         (Path("D:/test/4k2.com@MXGS-993-4K.mp4"), "MXGS-993", ["4k2", ".com@"], "4K"),
         (Path("D:/test/4k3.com@SSNI-1000-4K.mp4"), "SSNI-1000", ["4k3.com@"], "4K"),
         (Path("D:/test/HUHD-111-UHD.mp4"), "HUHD-111", [], "4K"),
+        (Path("D:/test/JUR-615-U4K.mp4"), "JUR-615", [], "4K"),
+        (Path("D:/test/JUR-615-UC4K.mp4"), "JUR-615", [], "4K"),
+        (Path("D:/test/JUR-615-UC-4K.mp4"), "JUR-615", [], "4K"),
         (Path("D:/test/IPZZ-841_4K60FPS.mp4"), "IPZZ-841", [], "4K"),
         (Path("D:/test/IPZZ-841_4KS.mp4"), "IPZZ-841", [], "4K"),
         (Path("D:/test/IPZZ-841_4k60fps.mp4"), "IPZZ-841", [], "4K"),
@@ -132,6 +137,56 @@ async def test_get_file_info_marks_restored_as_umr_case_insensitive():
     assert file_info.number == "ABF-131"
     assert file_info.destroyed == manager.config.umr_style
     assert file_info.mosaic == "无码破解"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        Path("D:/test/JUR-615-UC4K.mp4"),
+        Path("D:/test/JUR-615-UC-4K.mp4"),
+        Path("D:/test/JUR-615-U4K.mp4"),
+    ],
+)
+async def test_get_file_info_marks_umr_when_uc_suffix_is_followed_by_definition(file_path: Path):
+    old_file_mode = Flags.file_mode
+    Flags.file_mode = FileMode.Default
+    try:
+        file_info = await get_file_info_v2(file_path, copy_sub=False)
+    finally:
+        Flags.file_mode = old_file_mode
+
+    assert file_info.number == "JUR-615"
+    assert file_info.destroyed == manager.config.umr_style
+    assert file_info.mosaic == "无码破解"
+
+
+@pytest.mark.asyncio
+async def test_get_file_info_does_not_treat_uc_number_prefix_as_umr_marker():
+    old_file_mode = Flags.file_mode
+    Flags.file_mode = FileMode.Default
+    try:
+        file_info = await get_file_info_v2(Path("D:/test/UC-123.mp4"), copy_sub=False)
+    finally:
+        Flags.file_mode = old_file_mode
+
+    assert file_info.number == "UC-123"
+    assert file_info.destroyed == ""
+    assert file_info.mosaic == ""
+
+
+@pytest.mark.asyncio
+async def test_get_file_info_does_not_treat_uhd_definition_as_umr_marker():
+    old_file_mode = Flags.file_mode
+    Flags.file_mode = FileMode.Default
+    try:
+        file_info = await get_file_info_v2(Path("D:/test/JUR-615-UHD.mp4"), copy_sub=False)
+    finally:
+        Flags.file_mode = old_file_mode
+
+    assert file_info.number == "JUR-615"
+    assert file_info.destroyed == ""
+    assert file_info.mosaic == ""
 
 
 @pytest.mark.asyncio
