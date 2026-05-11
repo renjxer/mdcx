@@ -271,7 +271,9 @@ class Scraper:
             Flags.new_again_dic = Flags.again_dic.copy()
             new_movie_list = list(Flags.new_again_dic.keys())
             Flags.again_dic.clear()
-            start_new_scrape(FileMode.Again, new_movie_list)
+            signal.change_buttons_status.emit()
+            await self._run(FileMode.Again, new_movie_list)
+            return
         if Switch.AUTO_EXIT in manager.config.switch_on:
             signal.show_log_text("\n\n 🍔 已启用「刮削后自动退出软件」！")
             count = 5
