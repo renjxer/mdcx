@@ -10,6 +10,7 @@ from lxml import etree
 
 from ..config.enums import DownloadableFile, KeepableFile, Language, NfoInclude, OutlineShow, ReadMode, Website
 from ..config.manager import manager
+from ..config.resource_policy import resource_policy
 from ..gen.field_enums import CrawlerResultFields
 from ..manual import ManualConfig
 from ..models.log_buffer import LogBuffer
@@ -20,7 +21,8 @@ from ..utils import get_used_time
 from ..utils.file import delete_file_async
 from ..utils.language import is_japanese
 from .mosaic import normalize_mosaic
-from .utils import render_name_template
+from .naming import NameRenderOptions, NamingTarget, render_name
+from .tag_priority import prioritize_nfo_tags
 
 
 def get_external_id_tag_name(site: Website | str) -> str:
@@ -32,13 +34,19 @@ async def write_nfo(file_info: FileInfo, data: CrawlersResult, nfo_file: Path, o
     start_time = time.time()
     download_files = manager.config.download_files
     keep_files = manager.config.keep_files
+    nfo_policy = resource_policy(
+        DownloadableFile.NFO,
+        KeepableFile.NFO,
+        download_files=download_files,
+        keep_files=keep_files,
+    )
     outline_show = manager.config.outline_format
 
     if not update:
         # 不写nfo
         # 不下载，不保留时
-        if DownloadableFile.NFO not in download_files:
-            if KeepableFile.NFO not in keep_files and await aiofiles.os.path.exists(nfo_file):
+        if not nfo_policy.should_download:
+            if not nfo_policy.should_keep and await aiofiles.os.path.exists(nfo_file):
                 await delete_file_async(nfo_file)
             return True
 
@@ -112,16 +120,17 @@ async def write_nfo(file_info: FileInfo, data: CrawlersResult, nfo_file: Path, o
     show_cnword = False
     show_moword = False
     # 获取在媒体文件中显示的规则，不需要过滤Windows异常字符
-    should_escape_result = False
-    nfo_title, *_ = render_name_template(
+    nfo_title = render_name(
         nfo_title_template,
         file_info,
         data,
-        show_4k,
-        show_cnword,
-        show_moword,
-        should_escape_result,
-    )
+        NameRenderOptions(
+            target=NamingTarget.NFO_TITLE,
+            show_definition_suffix=show_4k,
+            show_cnword_suffix=show_cnword,
+            show_moword_suffix=show_moword,
+        ),
+    ).text
 
     # 获取字段
     nfo_include_new = manager.config.nfo_include_new
@@ -131,9 +140,10 @@ async def write_nfo(file_info: FileInfo, data: CrawlersResult, nfo_file: Path, o
     number = data.number
     poster = data.poster
     runtime = data.runtime
-    tags = data.tags
     trailer = data.trailer
     year = data.year
+    series_tag = manager.config.nfo_tag_series.replace("series", series) if series else ""
+    tags = prioritize_nfo_tags(data.tags, series_tag=series_tag, series_template=manager.config.nfo_tag_series)
 
     try:
         if not await aiofiles.os.path.exists(output_dir):

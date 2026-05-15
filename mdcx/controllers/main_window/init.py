@@ -230,6 +230,8 @@ def Init_Singal(self: "MyMAinWindow"):
     self.Ui.pushButton_tips_soft.clicked.connect(self.pushButton_tips_soft_clicked)
     self.Ui.pushButton_tips_hard.clicked.connect(self.pushButton_tips_hard_clicked)
     self.Ui.checkBox_cover.stateChanged.connect(self.checkBox_cover_clicked)
+    self.Ui.checkBox_amazon_big_pic.stateChanged.connect(self.update_amazon_strict_pic_verify_state)
+    self.Ui.radioButton_scrape_info.toggled.connect(self.update_field_priority_try_all_images_state)
     self.Ui.checkBox_i_agree_clean.stateChanged.connect(self.checkBox_i_agree_clean_clicked)
     self.Ui.checkBox_cd_part_a.stateChanged.connect(self.checkBox_cd_part_a_clicked)
     self.Ui.checkBox_i_understand_clean.stateChanged.connect(self.checkBox_i_agree_clean_clicked)
@@ -353,9 +355,8 @@ def Init_QSystemTrayIcon(self: "MyMAinWindow"):
 def init_QTreeWidget(self: "MyMAinWindow"):
     # 初始化树状控件
     try:
-        self.set_label_file_path.emit(
-            f"🎈 当前刮削路径: \n {get_movie_path_setting().movie_path}"
-        )  # 主界面右上角显示提示信息
+        movie_path_text = ";".join(str(path) for path in get_movie_path_setting().movie_paths)
+        self.set_label_file_path.emit(f"🎈 当前刮削路径: \n {movie_path_text}")  # 主界面右上角显示提示信息
     except Exception:
         signal_qt.show_traceback_log(traceback.format_exc())
     signal_qt.set_main_info()

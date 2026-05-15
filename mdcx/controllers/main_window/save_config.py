@@ -153,6 +153,7 @@ def save_config(self: "MyMAinWindow"):
     manager.config.scrape_like = get_radio_buttons(
         (self.Ui.radioButton_scrape_speed, "speed"), (self.Ui.radioButton_scrape_info, "info"), default="single"
     )
+    manager.config.field_priority_try_all_images = get_checkbox(self.Ui.checkBox_field_priority_try_all_images)
 
     # 标题字段配置
     title_language = get_radio_buttons(
@@ -403,18 +404,11 @@ def save_config(self: "MyMAinWindow"):
     )
 
     manager.config.download_hd_pics = get_checkboxes(
-        (self.Ui.checkBox_hd_poster, HDPicSource.POSTER),
-        (self.Ui.checkBox_hd_thumb, HDPicSource.THUMB),
         (self.Ui.checkBox_amazon_big_pic, HDPicSource.AMAZON),
-        (self.Ui.checkBox_official_big_pic, HDPicSource.OFFICIAL),
-        (self.Ui.checkBox_google_big_pic, HDPicSource.GOOGLE),
-        (self.Ui.radioButton_google_only, HDPicSource.GOO_ONLY),
     )
-
-    google_used_text = self.Ui.lineEdit_google_used.text()
-    manager.config.google_used = str_to_list(google_used_text)
-    google_exclude_text = self.Ui.lineEdit_google_exclude.text()
-    manager.config.google_exclude = str_to_list(google_exclude_text)
+    manager.config.amazon_strict_pic_verify = (
+        self.Ui.checkBox_amazon_big_pic.isChecked() and self.Ui.checkBox_amazon_strict_pic_verify.isChecked()
+    )
     # endregion
 
     # region name
@@ -747,10 +741,11 @@ def save_config(self: "MyMAinWindow"):
             scrape_like_text += " · 软连接开"
         elif manager.config.soft_link == 2:
             scrape_like_text += " · 硬连接开"
+        movie_path_text = ";".join(str(path) for path in get_movie_path_setting().movie_paths)
         signal_qt.show_log_text(
             f" 🛠 当前配置：{manager.path} 保存完成！\n "
             f"📂 程序目录：{manager.data_folder} \n "
-            f"📂 刮削目录：{get_movie_path_setting().movie_path} \n "
+            f"📂 刮削目录：{movie_path_text} \n "
             f"💠 刮削模式：{Flags.main_mode_text} · {scrape_like_text} \n "
             f"🖥️ 系统信息：{platform.platform()} \n "
             f"🐰 软件版本：{self.localversion} \n"
@@ -764,8 +759,7 @@ def save_config(self: "MyMAinWindow"):
     self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)  # type: ignore
     self.activateWindow()
     try:
-        self.set_label_file_path.emit(
-            f"🎈 当前刮削路径: \n {get_movie_path_setting().movie_path}"
-        )  # 主界面右上角显示提示信息
+        movie_path_text = ";".join(str(path) for path in get_movie_path_setting().movie_paths)
+        self.set_label_file_path.emit(f"🎈 当前刮削路径: \n {movie_path_text}")  # 主界面右上角显示提示信息
     except Exception:
         signal_qt.show_traceback_log(traceback.format_exc())

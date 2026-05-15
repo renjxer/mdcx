@@ -1,4 +1,4 @@
-from .ui_schema import Enum
+from enum import StrEnum as Enum
 
 
 class NoEscape(Enum):
@@ -321,16 +321,11 @@ class KeepableFile(Enum):
 
 
 class HDPicSource(Enum):
-    POSTER = "poster"
-    THUMB = "thumb"
     AMAZON = "amazon"
-    OFFICIAL = "official"
-    GOOGLE = "google"
-    GOO_ONLY = "goo_only"
 
     @classmethod
     def names(cls):
-        return ["poster", "thumb", "Amazon", "官网", "Google", "仅 Google"]
+        return ["Amazon"]
 
 
 class FieldRule(Enum):
@@ -534,7 +529,7 @@ class Website(Enum):
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema, handler):
-        json_schema = super().__get_pydantic_json_schema__(core_schema, handler)
+        json_schema = handler(core_schema)
         try:
             from mdcx.crawlers import get_registered_crawler_site_values
 

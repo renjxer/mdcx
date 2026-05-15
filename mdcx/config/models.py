@@ -10,7 +10,6 @@ from pydantic.fields import FieldInfo
 
 from ..gen.field_enums import CrawlerResultFields
 from ..manual import ManualConfig
-from ..server.config import SAFE_DIRS
 from .enums import (
     CDChar,
     CleanAction,
@@ -32,7 +31,7 @@ from .enums import (
     Translator,
     Website,
 )
-from .ui_schema import ServerPathDirectory, extract_ui_schema_recursive
+from .migrations import migrate_config_data
 
 
 def str_to_list(v: str | list[Any] | None, sep: Literal[",", "|"] = ",", unique: bool = True) -> list[str]:
@@ -155,11 +154,12 @@ def default_field_config(language: Language = Language.UNDEFINED, translate: boo
 class Config(BaseModel):
     model_config = ConfigDict()
     # region: General Settings
-    media_path: str = ServerPathDirectory("./media", title="媒体路径", initial_path=SAFE_DIRS[0].as_posix())
-    softlink_path: str = ServerPathDirectory("softlink", title="软链接路径", ref_field="media_path")
-    success_output_folder: str = ServerPathDirectory("JAV_output", title="成功输出目录", ref_field="media_path")
-    failed_output_folder: str = ServerPathDirectory("failed", title="失败输出目录", ref_field="media_path")
-    extrafanart_folder: str = ServerPathDirectory("extrafanart_copy", title="额外剧照目录")
+    config_version: int = Field(default=2, title="配置版本")
+    media_path: str = Field(default="./media", title="媒体路径")
+    softlink_path: str = Field(default="softlink", title="软链接路径")
+    success_output_folder: str = Field(default="JAV_output", title="成功输出目录")
+    failed_output_folder: str = Field(default="failed", title="失败输出目录")
+    extrafanart_folder: str = Field(default="extrafanart_copy", title="额外剧照目录")
     media_type: list[str] = Field(
         default_factory=lambda: [
             ".mp4",
@@ -275,11 +275,14 @@ class Config(BaseModel):
     main_mode: int = Field(default=1, title="主模式")
     read_mode: list[ReadMode] = Field(default_factory=list, title="读取模式")
     update_mode: str = Field(default="c", title="更新模式")
-    update_a_folder: str = Field(default="actor", title="更新A目录")
-    update_b_folder: str = Field(default="number actor", title="更新B目录")
-    update_c_filetemplate: str = Field(default="number", title="更新C文件模板")
-    update_d_folder: str = Field(default="number actor", title="更新D目录")
-    update_titletemplate: str = Field(default="number title", title="更新标题模板")
+    update_a_folder: str = Field(default="{{ actor }}", title="更新A目录")
+    update_b_folder: str = Field(default="{{ number }} {{ actor }}", title="更新B目录")
+    update_c_filetemplate: str = Field(default="{{ number }}", title="更新C文件模板")
+    update_d_folder: str = Field(default="{{ number }} {{ actor }}", title="更新D目录")
+    update_titletemplate: str = Field(
+        default="[{% if number %}{{ number }}{% endif %}]{% if title and title != number %}{{ title }}{% endif %}",
+        title="更新标题模板",
+    )
     soft_link: int = Field(default=0, title="软链接")
     success_file_move: bool = Field(default=True, title="成功后移动文件")
     failed_file_move: bool = Field(default=True, title="失败后移动文件")
@@ -308,41 +311,34 @@ class Config(BaseModel):
     )
     keep_files: list[KeepableFile] = Field(
         default_factory=lambda: [
-            KeepableFile.POSTER,
-            KeepableFile.THUMB,
-            KeepableFile.FANART,
-            KeepableFile.EXTRAFANART,
             KeepableFile.TRAILER,
-            KeepableFile.NFO,
-            KeepableFile.EXTRAFANART_COPY,
             KeepableFile.THEME_VIDEOS,
         ],
         title="保留文件类型",
     )
     download_hd_pics: list[HDPicSource] = Field(
-        default_factory=lambda: [HDPicSource.POSTER, HDPicSource.THUMB, HDPicSource.GOO_ONLY],
-        title="高清图片来源",
+        default_factory=lambda: [HDPicSource.AMAZON],
+        title="Amazon 高清封面图",
     )
-    google_used: list[str] = Field(
-        default_factory=lambda: ["m.media-amazon.com"],
-        title="Google使用",
-    )
-    google_exclude: list[str] = Field(
-        default_factory=lambda: [
-            "fake",
-            "javfree",
-            "idoljp.com",
-            "qqimg.top",
-            "u9a9",
-            "picturedata",
-            "abpic",
-            "pbs.twimg.com",
-            "naiwarp",
-        ],
-        title="Google搜图排除的网址",
-    )
+    amazon_strict_pic_verify: bool = Field(default=False, title="严格校验 Amazon 图片")
     scrape_like: Literal["info", "speed", "single"] = Field(default="info", title="刮削模式")  # speed, info, single
+    field_priority_try_all_images: bool = Field(default=False, title="字段优先时尝试所有图片")
     # endregion
+
+    @field_validator("download_hd_pics", mode="before")
+    @classmethod
+    def filter_removed_hd_pic_sources(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            items = str_to_list(v)
+        elif isinstance(v, list):
+            items = v
+        else:
+            return v
+
+        valid_values = {HDPicSource.AMAZON.value}
+        return [item for item in items if (item.value if isinstance(item, HDPicSource) else str(item)) in valid_values]
 
     # region: Website Settings
     website_single: Website = Field(default=Website.AIRAV_CC, title="单个网站")  # todo 移除
@@ -497,9 +493,12 @@ class Config(BaseModel):
     nfo_tag_publisher: str = Field(default="发行: publisher", title="NFO发行商标签")
     nfo_tag_actor: str = Field(default="actor", title="NFO演员标签")
     nfo_tag_actor_contains: list[str] = Field(default_factory=list, title="NFO 演员名白名单")
-    folder_name: str = Field(default="actor/number actor", title="目录名称")
-    naming_file: str = Field(default="number", title="文件命名")
-    naming_media: str = Field(default="number title", title="媒体命名")
+    folder_name: str = Field(default="{{ actor }}/{{ number }} {{ actor }}", title="目录名称")
+    naming_file: str = Field(default="{{ number }}", title="文件命名")
+    naming_media: str = Field(
+        default="[{% if number %}{{ number }}{% endif %}]{% if title and title != number %}{{ title }}{% endif %}",
+        title="媒体命名",
+    )
     prevent_char: str = Field(default="", title="禁止字符")
     fields_rule: list[FieldRule] = Field(
         default_factory=lambda: [FieldRule.DEL_ACTOR, FieldRule.DEL_CHAR, FieldRule.FC2_SELLER, FieldRule.DEL_NUM],
@@ -817,87 +816,12 @@ class Config(BaseModel):
         """
         处理字段变更.
         """
-
-        def migrate_download_file_option(value: Any) -> Any:
-            if value == "youma_use_poster":
-                return None
-            if value == DownloadableFile.POSTER_AUTO_BEST:
-                return DownloadableFile.POSTER_AUTO_BEST.value
-            return value
-
-        def is_removed_airav_site(site: object) -> bool:
-            return site == Website.AIRAV or site == Website.AIRAV.value
-
-        if is_removed_airav_site(d.get("website_single")):
-            d["website_single"] = Website.AIRAV_CC.value
-        for key, value in list(d.items()):
-            if key.startswith("website_") and key != "website_single":
-                if isinstance(value, str):
-                    d[key] = [site for site in str_to_list(value, ",") if not is_removed_airav_site(site)]
-                elif isinstance(value, list | set):
-                    d[key] = [site for site in value if not is_removed_airav_site(site)]
-        if isinstance(field_configs := d.get("field_configs"), dict):
-            for value in field_configs.values():
-                if isinstance(value, dict) and isinstance(sites := value.get("site_prority"), list):
-                    value["site_prority"] = [site for site in sites if not is_removed_airav_site(site)]
-        if isinstance(type_field_configs := d.get("type_field_configs"), dict):
-            for field_configs in type_field_configs.values():
-                if not isinstance(field_configs, dict):
-                    continue
-                for value in field_configs.values():
-                    if isinstance(value, dict) and isinstance(sites := value.get("site_prority"), list):
-                        value["site_prority"] = [site for site in sites if not is_removed_airav_site(site)]
-        if "proxy_type" in d:
-            d["use_proxy"] = d["proxy_type"] != "no"
-        if isinstance(r := d.get("proxy"), str):
-            r = r.strip()
-            if all(schema not in r for schema in ["http://", "https://", "socks5://", "socks5h://"]):
-                d["proxy"] = "http://" + r
-        if isinstance(r := d.get("cf_bypass_url"), str):
-            r = r.strip().rstrip("/")
-            if r and all(schema not in r for schema in ["http://", "https://"]):
-                r = "http://" + r
-            d["cf_bypass_url"] = r
-        if isinstance(r := d.get("cf_bypass_proxy"), str):
-            r = r.strip()
-            if r and all(schema not in r for schema in ["http://", "https://", "socks4://", "socks5://", "socks5h://"]):
-                r = "http://" + r
-            d["cf_bypass_proxy"] = r
-        if isinstance(r := d.get("nfo_tag_actor_contains"), str):
-            d["nfo_tag_actor_contains"] = str_to_list(r, "|")
-        if isinstance(r := d.get("use_database"), int):
-            d["use_database"] = bool(r)
-        if isinstance(r := d.get("local_library"), str):
-            d["local_library"] = str_to_list(r, ",")
-        if isinstance(download_files := d.get("download_files"), str):
-            d["download_files"] = [
-                item
-                for value in str_to_list(download_files, ",")
-                if (item := migrate_download_file_option(value)) is not None
-            ]
-        elif isinstance(download_files, list | set):
-            d["download_files"] = [
-                item for value in download_files if (item := migrate_download_file_option(value)) is not None
-            ]
-
-        # 兼容旧版 llm_prompt 配置
-        if isinstance(translate_config := d.get("translate_config"), dict):
-            old_prompt = translate_config.pop("llm_prompt", None)
-            if isinstance(old_prompt, str):
-                translate_config.setdefault("llm_prompt_title", old_prompt)
-                translate_config.setdefault("llm_prompt_outline", old_prompt)
-            if isinstance(translate_by := translate_config.get("translate_by"), list):
-                translate_config["translate_by"] = [item for item in translate_by if item != "youdao"]
-        if isinstance(old_prompt := d.get("llm_prompt"), str):
-            translate_config = d.setdefault("translate_config", {})
-            if isinstance(translate_config, dict):
-                translate_config.setdefault("llm_prompt_title", old_prompt)
-                translate_config.setdefault("llm_prompt_outline", old_prompt)
+        warnings = migrate_config_data(d)
         # 处理旧版字段设置
         if "field_configs" not in d:
             Config._convert_field_configs(d)
 
-        return []
+        return warnings
 
     @staticmethod
     def _convert_field_configs(d):
@@ -1023,11 +947,6 @@ class Config(BaseModel):
         data = handle_dict(cls.model_fields, data)
         cls.update(data)
         return cls.model_validate(data)
-
-    @classmethod
-    @lru_cache
-    def ui_schema(cls) -> dict[str, Any]:
-        return extract_ui_schema_recursive(cls.json_schema())
 
     @classmethod
     @lru_cache

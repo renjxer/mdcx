@@ -26,6 +26,15 @@ MULTI_LANGUAGE_WEBSITES = [  # 支持多语言, language 参数有意义
     Website.IQQTV,
     Website.JAVLIBRARY,
 ]
+SPECIFIC_CRAWLER_TITLE_LANGUAGE_SITES = {
+    Website.AIRAV_CC,
+    Website.IQQTV,
+    Website.AVSEX,
+    Website.JAVLIBRARY,
+    Website.MDTV,
+    Website.MADOUQU,
+    Website.LULUBAR,
+}
 
 
 def sprint_source(website: Website, language: Language) -> str:
@@ -283,6 +292,11 @@ class FileScraper:
         failed: set[tuple[Website, Language]] = set()  # 记录失败的网站
         reduced = CrawlersResult.empty()
         req_info: list[str] = []  # 请求信息列表
+        try_all_images = bool(
+            getattr(self.config, "scrape_like", "") == "info"
+            and getattr(self.config, "field_priority_try_all_images", False)
+        )
+        image_fields = {CrawlerResultFields.THUMB, CrawlerResultFields.POSTER}
 
         # 按字段分别处理，每个字段按优先级尝试获取
         for field in ManualConfig.REDUCED_FIELDS:
@@ -367,22 +381,29 @@ class FileScraper:
                         continue
                     field_value = normalized_year
 
+                is_primary_field_value = not getattr(reduced, field.value, None)
+
                 # 添加来源信息
-                reduced.field_sources[field] = site.value
+                if is_primary_field_value:
+                    reduced.field_sources[field] = site.value
 
                 # 添加 external_id
                 reduced.external_ids[site] = site_data.external_id
 
-                if field == CrawlerResultFields.POSTER:
+                if field == CrawlerResultFields.POSTER and is_primary_field_value:
                     reduced.image_download = site_data.image_download
                 elif field == CrawlerResultFields.ORIGINALTITLE and site_data.actor:
                     reduced.amazon_orginaltitle_actor = site_data.actor.split(",")[0]
 
                 # 保存数据
-                setattr(reduced, field.value, field_value)
-                reduced.field_log += f"\n    🟢 {site}\n     ↳{getattr(reduced, field.value)}"
+                if is_primary_field_value:
+                    setattr(reduced, field.value, field_value)
+                    reduced.field_log += f"\n    🟢 {site}\n     ↳{getattr(reduced, field.value)}"
+                elif try_all_images and field in image_fields:
+                    reduced.field_log += f"\n    🟢 {site} (候选)\n     ↳{field_value}"
                 # 找到有效数据，跳出循环继续处理下一个字段
-                break
+                if not (try_all_images and field in image_fields):
+                    break
             else:  # 所有来源都无此字段
                 reduced.field_log += "\n    🔴 所有来源均无数据"
 
@@ -395,11 +416,14 @@ class FileScraper:
             # 记录所有来源的 thumb url 以便后续下载
             if data.thumb:
                 reduced.thumb_list.append((data.source, data.thumb))
+            if data.poster:
+                reduced.poster_list.append((data.source, data.poster, data.image_download))
             # 记录所有来源的 actor 用于 Amazon 搜图
             if data.actor:
                 reduced.actor_amazon.extend(data.actors)
         # 去重
         reduced.thumb_list = list(dict.fromkeys(reduced.thumb_list))  # 保序
+        reduced.poster_list = list(dict.fromkeys(reduced.poster_list))  # 保序
         reduced.actor_amazon = list(set(reduced.actor_amazon))
 
         # 处理 release
@@ -430,19 +454,48 @@ class FileScraper:
 
         return reduced
 
+    def _get_specific_crawler_language(self, website: Website) -> tuple[Language, Language]:
+        title_language = self.config.get_field_config(CrawlerResultFields.TITLE).language
+        org_language = title_language
+
+        if website not in SPECIFIC_CRAWLER_TITLE_LANGUAGE_SITES:
+            title_language = Language.JP
+        elif website == Website.MDTV:
+            title_language = Language.ZH_CN
+
+        return title_language, org_language
+
+    def _convert_specific_crawler_result(
+        self,
+        web_data_json: CrawlerResult,
+        website: Website,
+        title_language: Language,
+        execution_time: float,
+    ) -> CrawlersResult:
+        res = update(CrawlersResult.empty(), web_data_json)
+        if res.title:
+            if res.thumb:
+                res.thumb_list = [(website, res.thumb)]
+            if res.poster:
+                res.poster_list = [(website, res.poster, res.image_download)]
+
+            # 加入来源信息
+            res.field_sources = dict.fromkeys(CrawlerResultFields, website.value)
+
+            # external_id
+            res.external_ids[website] = web_data_json.external_id
+
+            res.site_log = f"\n 🌐 [website] {sprint_source(website, title_language)} ({execution_time:.2f}s)"
+
+        res.actor_amazon = web_data_json.actors
+        res.all_actors = list(dict.fromkeys(chain(res.all_actors, web_data_json.actors)))
+        return res
+
     async def _call_specific_crawler(self, task_input: CrawlerInput, website: Website) -> CrawlersResult | None:
         file_number = task_input.number
         short_number = task_input.short_number
 
-        title_language = self.config.get_field_config(CrawlerResultFields.TITLE).language
-        org_language = title_language
-
-        if website not in ["airav_cc", "iqqtv", "avsex", "javlibrary", "mdtv", "madouqu", "lulubar"]:
-            title_language = Language.JP
-
-        elif website == "mdtv":
-            title_language = Language.ZH_CN
-
+        title_language, org_language = self._get_specific_crawler_language(website)
         task_input.language = title_language
         task_input.org_language = org_language
         web_data = await self._call_crawler(task_input, website)
@@ -452,29 +505,52 @@ class FileScraper:
                 LogBuffer.error().write(str(e))
             return None
 
-        res = update(CrawlersResult.empty(), web_data_json)
-        if not res.title:
-            return res
-        if res.thumb:
-            res.thumb_list = [(website, res.thumb)]
-
-        # 加入来源信息
-        res.field_sources = dict.fromkeys(CrawlerResultFields, website.value)
-
-        # external_id
-        res.external_ids[website] = web_data_json.external_id
-
-        res.site_log = (
-            f"\n 🌐 [website] {sprint_source(website, title_language)} ({web_data.debug_info.execution_time:.2f}s)"
+        res = self._convert_specific_crawler_result(
+            web_data_json, website, title_language, web_data.debug_info.execution_time
         )
 
         if short_number:
             res.number = file_number
 
-        res.actor_amazon = web_data_json.actors
-        res.all_actors = list(dict.fromkeys(chain(res.all_actors, web_data_json.actors)))
-
         return res
+
+    async def _call_speed_crawlers(
+        self, task_input: CrawlerInput, classification: ScrapeClassification
+    ) -> CrawlersResult | None:
+        """
+        速度优先：按影片类型的网站顺序逐站尝试，首个返回数据的网站直接作为最终结果。
+        """
+        failed_info: list[str] = []
+        for website in list(classification.sites or []):
+            title_language, org_language = self._get_specific_crawler_language(website)
+            task_input.language = title_language
+            task_input.org_language = org_language
+            try:
+                web_data = await self._call_crawler(task_input, website)
+            except TimeoutError:
+                failed_info.append(f"{website.value}(请求超时)")
+                continue
+            except Exception as e:
+                failed_info.append(f"{website.value}(失败: {e})")
+                continue
+
+            if web_data.data is None:
+                if e := web_data.debug_info.error:
+                    failed_info.append(f"{website.value}(失败: {e})")
+                else:
+                    failed_info.append(f"{website.value}(返回空数据)")
+                continue
+
+            res = self._convert_specific_crawler_result(
+                web_data.data, website, title_language, web_data.debug_info.execution_time
+            )
+            if failed_info:
+                res.field_log = "\n    ⚡ 速度优先跳过: " + " -> ".join(failed_info)
+            return res
+
+        if failed_info:
+            LogBuffer.error().write("速度优先所有来源均无结果: " + " -> ".join(failed_info))
+        return None
 
     async def _crawl(self, task_input: CrawlTask, website: Website | None) -> CrawlersResult | None:  # 从JSON返回元数据
         appoint_number = task_input.appoint_number
@@ -494,6 +570,8 @@ class FileScraper:
                 mosaic = classification.mosaic
             if classification.website:
                 res = await self._call_specific_crawler(task_input, classification.website)
+            elif self.config.scrape_like == "speed":
+                res = await self._call_speed_crawlers(task_input, classification)
             else:
                 res = await self._call_crawlers(task_input, classification)
         else:

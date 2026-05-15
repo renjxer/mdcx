@@ -98,11 +98,13 @@ class ConfigV1:
     main_mode: int = 1
     read_mode: str = r""
     update_mode: str = r"c"
-    update_a_folder: str = r"actor"
-    update_b_folder: str = r"number actor"
-    update_c_filetemplate: str = r"number"
-    update_d_folder: str = r"number actor"
-    update_titletemplate: str = r"number title"
+    update_a_folder: str = r"{{ actor }}"
+    update_b_folder: str = r"{{ number }} {{ actor }}"
+    update_c_filetemplate: str = r"{{ number }}"
+    update_d_folder: str = r"{{ number }} {{ actor }}"
+    update_titletemplate: str = (
+        r"[{% if number %}{{ number }}{% endif %}]{% if title and title != number %}{{ title }}{% endif %}"
+    )
     soft_link: int = 0
     success_file_move: bool = True
     failed_file_move: bool = True
@@ -113,9 +115,7 @@ class ConfigV1:
     # file_download
     download_files: str = r",poster,thumb,fanart,nfo,ignore_wuma,ignore_fc2,ignore_guochan,"
     keep_files: str = r",extrafanart,trailer,theme_videos,"
-    download_hd_pics: str = r"poster,thumb,amazon,official,google,"
-    google_used: str = r"m.media-amazon.com,"
-    google_exclude: str = r"fake,javfree,idoljp.com,qqimg.top,u9a9,picturedata,abpic,pbs.twimg.com,naiwarp"
+    download_hd_pics: str = r"amazon,"
 
     # website
     scrape_like: str = r"info"
@@ -210,9 +210,11 @@ class ConfigV1:
     nfo_tag_actor_contains: str = r""
 
     # name
-    folder_name: str = r"actor/number actor"
-    naming_file: str = r"number"
-    naming_media: str = r"number title"
+    folder_name: str = r"{{ actor }}/{{ number }} {{ actor }}"
+    naming_file: str = r"{{ number }}"
+    naming_media: str = (
+        r"[{% if number %}{{ number }}{% endif %}]{% if title and title != number %}{{ title }}{% endif %}"
+    )
     prevent_char: str = r""
     fields_rule: str = r"del_actor,del_char,"
     suffix_sort: str = r"moword,cnword,definition"

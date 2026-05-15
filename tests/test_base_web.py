@@ -1,3 +1,4 @@
+from concurrent.futures import CancelledError
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,22 @@ class _FakeResponse:
         self.headers = headers or {}
         self.content = content
         self.status_code = status_code
+
+
+class _FakeComputed:
+    class _AsyncClient:
+        def request(self, method: str, url: str, **kwargs):
+            return (method, url, kwargs)
+
+    async_client = _AsyncClient()
+
+
+class _FakeComputedLease:
+    def __enter__(self):
+        return _FakeComputed()
+
+    def __exit__(self, exc_type, exc, traceback):
+        return None
 
 
 def test_normalize_media_url_removes_empty_query_and_probe_params():
@@ -47,34 +64,21 @@ def test_normalize_media_url_collapses_duplicate_slashes_for_dmm_hosts():
     )
 
 
-@pytest.mark.asyncio
-async def test_google_image_search_uses_injected_size_getter(monkeypatch: pytest.MonkeyPatch):
-    calls: list[str] = []
+def test_check_theporndb_api_token_handles_cancelled_executor(monkeypatch: pytest.MonkeyPatch):
+    logs: list[str] = []
 
-    async def fake_get_text(url: str, **kwargs):
-        if "searchbyimage" in url:
-            return '<a href="/search?tbs=isz:l&amp;q=image">large</a>', ""
-        return '["https://cdn.example.test/poster.jpg",1200,900],x', ""
+    def fake_run(_coro):
+        raise CancelledError()
 
-    async def fake_size_getter(url: str):
-        calls.append(url)
-        return (900, 1200)
+    monkeypatch.setattr(manager.config, "theporndb_api_token", "token")
+    monkeypatch.setattr(base_web.manager, "acquire_computed", lambda: _FakeComputedLease())
+    monkeypatch.setattr(base_web.executor, "run", fake_run)
+    monkeypatch.setattr(base_web.signal, "show_log_text", logs.append)
 
-    async def fake_check_url(url: str, *args, **kwargs):
-        raise AssertionError(f"check_url should not be called when image_size_getter is provided: {url}")
+    result = base_web.check_theporndb_api_token()
 
-    monkeypatch.setattr(manager.computed.async_client, "get_text", fake_get_text)
-    monkeypatch.setattr(base_web, "check_url", fake_check_url)
-    monkeypatch.setattr(manager.config, "download_hd_pics", [])
-
-    url, size = await base_web.get_big_pic_by_google(
-        "https://example.test/source.jpg",
-        image_size_getter=fake_size_getter,
-    )
-
-    assert url == "https://cdn.example.test/poster.jpg"
-    assert size == (900, 1200)
-    assert calls == ["https://cdn.example.test/poster.jpg"]
+    assert result == "❌ ThePornDB 连接检查已取消"
+    assert logs == ["❌ ThePornDB 连接检查已取消"]
 
 
 @pytest.mark.asyncio

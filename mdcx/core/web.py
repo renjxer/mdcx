@@ -7,6 +7,7 @@ import re
 import shutil
 import time
 from asyncio import to_thread
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
@@ -18,12 +19,13 @@ from ..base.web import (
     check_url,
     download_extrafanart_task,
     download_file_with_filepath,
-    get_big_pic_by_google,
     get_dmm_trailer,
     get_imgsize,
+    get_url_content_length,
 )
-from ..config.enums import DownloadableFile, FixedScrapingType, HDPicSource
+from ..config.enums import DownloadableFile, FixedScrapingType, HDPicSource, KeepableFile
 from ..config.manager import manager
+from ..config.resource_policy import resource_policy
 from ..manual import ManualConfig
 from ..models.flags import Flags
 from ..models.log_buffer import LogBuffer
@@ -64,6 +66,16 @@ POSTER_DIRECT_DOWNLOAD_TYPES = {
 }
 POSTER_AUTO_BEST_MIN_CROP_AREA_RATIO = 0.70
 POSTER_AUTO_BEST_MIN_CROP_HEIGHT_RATIO = 0.80
+POSTER_SKIP_AMAZON_MIN_BYTES = 400 * 1024
+
+
+@dataclass(frozen=True)
+class PosterCandidate:
+    source: str
+    url: str
+    image_download: bool
+    size: tuple[int, int] = (0, 0)
+
 
 __all__ = [
     "_beam_search_amazon_ean13_from_ranked_digits",
@@ -108,7 +120,7 @@ async def _cleanup_download_part_files(*file_paths: Path) -> None:
 
 async def _get_image_size(url: str, media_context: MediaResourceContext | None = None) -> tuple[int, int]:
     if media_context is not None:
-        return await media_context.probe_size(url)
+        return await media_context.probe_original_size(url)
     return await get_imgsize(url)
 
 
@@ -188,6 +200,42 @@ def _is_known_image_size(size: tuple[int, int]) -> bool:
     return size[0] > 0 and size[1] > 0
 
 
+def _dedupe_poster_candidates(candidates: list[PosterCandidate]) -> list[PosterCandidate]:
+    result: list[PosterCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized_url = MediaResourceContext.normalize_url(candidate.url)
+        if not normalized_url or normalized_url in seen:
+            continue
+        seen.add(normalized_url)
+        result.append(candidate)
+    return result
+
+
+def _select_best_poster_candidate(
+    candidates: list[PosterCandidate],
+    crop_size: tuple[int, int],
+) -> PosterCandidate | None:
+    known_candidates = [each for each in candidates if _is_known_image_size(each.size)]
+    if not known_candidates:
+        LogBuffer.log().write("\n 🖼 Poster选优: 无可比较的 Poster 尺寸，保持原策略")
+        return candidates[0] if candidates else None
+
+    best = max(known_candidates, key=lambda item: _image_area(item.size))
+    if _is_known_image_size(crop_size):
+        best_area = _image_area(best.size)
+        crop_area = _image_area(crop_size)
+        if (
+            best_area < crop_area * POSTER_AUTO_BEST_MIN_CROP_AREA_RATIO
+            or best.size[1] < crop_size[1] * POSTER_AUTO_BEST_MIN_CROP_HEIGHT_RATIO
+        ):
+            LogBuffer.log().write(f"\n 🖼 Poster选优: 直下/搜索图{best.size}明显小于thumb右裁剪{crop_size}，改用裁剪")
+            return None
+
+    LogBuffer.log().write(f"\n 🖼 Poster选优: 使用 {best.source} {best.size}")
+    return best
+
+
 async def _select_poster_auto_best(
     result: CrawlersResult,
     other: OtherInfo,
@@ -228,9 +276,71 @@ async def _select_poster_auto_best(
     result.poster = best_url
     result.poster_from = best_from
     result.image_download = True
-    if best_from.startswith("Google"):
-        other.poster_size = best_size
     LogBuffer.log().write(f"\n 🖼 Poster选优: 使用 {best_from} {best_size}")
+
+
+async def _is_existing_poster_better_than_youma_crop(
+    result: CrawlersResult,
+    other: OtherInfo,
+    media_context: MediaResourceContext | None = None,
+) -> bool:
+    poster_size = await _get_image_size(result.poster, media_context)
+    if not _is_known_image_size(poster_size):
+        LogBuffer.log().write("\n 🖼 Amazon搜索：当前 Poster 尺寸未知，继续搜索高清图")
+        return False
+
+    crop_size = await _get_thumb_right_crop_size_from_path(other.fanart_path or other.thumb_path)
+    if not _is_known_image_size(crop_size):
+        return True
+
+    poster_area = _image_area(poster_size)
+    crop_area = _image_area(crop_size)
+    if (
+        poster_area < crop_area * POSTER_AUTO_BEST_MIN_CROP_AREA_RATIO
+        or poster_size[1] < crop_size[1] * POSTER_AUTO_BEST_MIN_CROP_HEIGHT_RATIO
+    ):
+        LogBuffer.log().write(
+            f"\n 🖼 Amazon搜索：当前 Poster{poster_size} 明显小于 thumb 右裁剪{crop_size}，继续搜索高清图"
+        )
+        return False
+
+    return True
+
+
+async def _should_skip_amazon_for_existing_poster(
+    result: CrawlersResult,
+    other: OtherInfo,
+    *,
+    poster_auto_best: bool = False,
+    media_context: MediaResourceContext | None = None,
+) -> bool:
+    if not result.poster or result.poster_from == "Amazon":
+        return False
+
+    if result.scraping_type == FixedScrapingType.YOUMA and not poster_auto_best:
+        if not await _is_existing_poster_better_than_youma_crop(result, other, media_context):
+            return False
+    elif not _is_known_image_size(await _get_image_size(result.poster, media_context)):
+        LogBuffer.log().write("\n 🖼 Amazon搜索：当前 Poster 尺寸未知，继续搜索高清图")
+        return False
+
+    content_length = (
+        await media_context.get_content_length(result.poster)
+        if media_context is not None
+        else await get_url_content_length(result.poster)
+    )
+    if not content_length:
+        LogBuffer.log().write("\n 🖼 Amazon搜索：当前 Poster 大小未知，继续搜索高清图")
+        return False
+
+    if content_length < POSTER_SKIP_AMAZON_MIN_BYTES:
+        LogBuffer.log().write(f"\n 🖼 Amazon搜索：当前 Poster 大小({content_length // 1024}KB)低于阈值，继续搜索高清图")
+        return False
+
+    if result.scraping_type == FixedScrapingType.YOUMA and not poster_auto_best:
+        result.image_download = True
+    LogBuffer.log().write(f"\n 🖼 Amazon搜索：当前 Poster 已足够清晰({content_length // 1024}KB)，跳过 Amazon")
+    return True
 
 
 def _prepare_similarity_image(img: Image.Image) -> Image.Image:
@@ -322,8 +432,10 @@ async def _verify_soft_amazon_poster(
     original_poster_url: str,
     original_poster_from: str,
     media_context: MediaResourceContext | None = None,
+    strict: bool = False,
 ) -> bool:
-    LogBuffer.log().write("\n 🔎 Amazon图片校验：软匹配，开始与已获取图片比对")
+    verify_mode = "严格模式" if strict else "软匹配"
+    LogBuffer.log().write(f"\n 🔎 Amazon图片校验：{verify_mode}，开始与已获取图片比对")
     amazon_img = await _download_image_to_memory(amazon_url, media_context)
     if amazon_img is None:
         LogBuffer.log().write("\n 🟡 Amazon图片校验未通过：Amazon图片读取失败")
@@ -391,6 +503,13 @@ async def trailer_download(
     trailer_old_folder_path = folder_old / "trailers"
     trailer_new_folder_path = folder_new / "trailers"
 
+    trailer_policy = resource_policy(
+        DownloadableFile.TRAILER,
+        KeepableFile.TRAILER,
+        download_files=download_files,
+        keep_files=keep_files,
+    )
+
     # 预告片名字不含视频文件名（只让一个视频去下载即可）
     if trailer_name:
         trailer_folder_path = folder_new / "trailers"
@@ -404,7 +523,7 @@ async def trailer_download(
         await _cleanup_download_part_files(trailer_file_path, trailer_file_path.with_suffix(".[DOWNLOAD].mp4"))
 
         # 不下载不保留时删除返回
-        if DownloadableFile.TRAILER not in download_files and DownloadableFile.TRAILER not in keep_files:
+        if trailer_policy.should_remove_existing:
             # 删除目标文件夹即可，其他文件夹和文件已经删除了
             if await aiofiles.os.path.exists(trailer_folder_path):
                 await to_thread(shutil.rmtree, trailer_folder_path, ignore_errors=True)
@@ -418,7 +537,7 @@ async def trailer_download(
         await _cleanup_download_part_files(trailer_file_path, trailer_file_path.with_suffix(".[DOWNLOAD].mp4"))
 
         # 不下载不保留时删除返回
-        if DownloadableFile.TRAILER not in download_files and DownloadableFile.TRAILER not in keep_files:
+        if trailer_policy.should_remove_existing:
             # 删除目标文件，删除预告片旧文件夹、新文件夹（deal old file时没删除）
             if await aiofiles.os.path.exists(trailer_file_path):
                 await delete_file_async(trailer_file_path)
@@ -431,7 +550,7 @@ async def trailer_download(
             return
 
     # 选择保留文件，当存在文件时，不下载。（done trailer path 未设置时，把当前文件设置为 done trailer path，以便其他分集复制）
-    if DownloadableFile.TRAILER in keep_files and await aiofiles.os.path.exists(trailer_file_path):
+    if trailer_policy.should_keep and await aiofiles.os.path.exists(trailer_file_path):
         if not Flags.file_done_dic.get(result.number, {}).get("trailer"):
             Flags.file_done_dic[result.number].update({"trailer": trailer_file_path})
             # 带文件名时，删除掉新、旧文件夹，用不到了。（其他分集如果没有，可以复制第一个文件的预告片。此时不删，没机会删除了）
@@ -456,7 +575,7 @@ async def trailer_download(
         return
 
     # 不下载时返回（选择不下载保留，但本地并不存在，此时返回）
-    if DownloadableFile.TRAILER not in download_files:
+    if not trailer_policy.should_download:
         return
 
     if ".fc2.com/" in trailer_url and "mid=" in trailer_url and "/up/" in trailer_url:
@@ -523,143 +642,35 @@ async def trailer_download(
         return True
 
 
-async def _get_big_thumb(
-    result: CrawlersResult,
-    other: OtherInfo,
-    media_context: MediaResourceContext | None = None,
-):
-    """
-    获取背景大图：
-    1，官网图片
-    2，Amazon 图片
-    3，Google 搜图
-    """
-    start_time = time.time()
-    if "thumb" not in manager.config.download_hd_pics:
-        return
-    number = result.number
-    letters = result.letters
-    number_lower_line = number.lower()
-    number_lower_no_line = number_lower_line.replace("-", "")
-    thumb_width = 0
-
-    # faleno.jp 番号检查，都是大图，返回即可
-    if result.thumb_from in ["faleno", "dahlia"]:
-        if result.thumb:
-            LogBuffer.log().write(f"\n 🖼 HD Thumb found! ({result.thumb_from})({get_used_time(start_time)}s)")
-        other.poster_big = True
-        return result
-
-    # prestige 图片有的是大图，需要检测图片分辨率
-    elif result.thumb_from in ["prestige", "mgstage"]:
-        if result.thumb:
-            thumb_width, h = await _get_image_size(result.thumb, media_context)
-
-    # 片商官网查询
-    elif HDPicSource.OFFICIAL in manager.config.download_hd_pics:
-        # faleno.jp 番号检查
-        if re.findall(r"F[A-Z]{2}SS", number):
-            req_url = f"https://faleno.jp/top/works/{number_lower_no_line}/"
-            async with manager.acquire_computed() as computed:
-                response, error = await computed.async_client.get_text(req_url)
-            if response is not None:
-                temp_url = re.findall(
-                    r'src="((https://cdn.faleno.net/top/wp-content/uploads/[^_]+_)([^?]+))\?output-quality=', response
-                )
-                if temp_url:
-                    result.thumb = temp_url[0][0]
-                    result.poster = temp_url[0][1] + "2125.jpg"
-                    result.thumb_from = "faleno"
-                    result.poster_from = "faleno"
-                    other.poster_big = True
-                    trailer_temp = re.findall(r'class="btn09"><a class="pop_sample" href="([^"]+)', response)
-                    if trailer_temp:
-                        result.trailer = trailer_temp[0]
-                        result.trailer_from = "faleno"
-                    LogBuffer.log().write(f"\n 🖼 HD Thumb found! (faleno)({get_used_time(start_time)}s)")
-                    return result
-
-        # km-produce.com 番号检查
-        number_letter = letters.lower()
-        kmp_key = ["vrkm", "mdtm", "mkmp", "savr", "bibivr", "scvr", "slvr", "averv", "kbvr", "cbikmv"]
-        prestige_key = ["abp", "abw", "aka", "prdvr", "pvrbst", "sdvr", "docvr"]
-        if number_letter in kmp_key:
-            req_url = f"https://km-produce.com/img/title1/{number_lower_line}.jpg"
-            real_url = ""
-            if media_context is not None:
-                if (await media_context.get_size(req_url))[0]:
-                    real_url = req_url
-            else:
-                real_url = await check_url(req_url) or ""
-            if real_url:
-                result.thumb = real_url
-                result.thumb_from = "km-produce"
-                LogBuffer.log().write(f"\n 🖼 HD Thumb found! (km-produce)({get_used_time(start_time)}s)")
-                return result
-
-        # www.prestige-av.com 番号检查
-        elif number_letter in prestige_key:
-            number_num = re.findall(r"\d+", number)[0]
-            if number_letter == "abw" and int(number_num) > 280:
-                pass
-            else:
-                req_url = f"https://www.prestige-av.com/api/media/goods/prestige/{number_letter}/{number_num}/pb_{number_lower_line}.jpg"
-                if number_letter == "docvr":
-                    req_url = f"https://www.prestige-av.com/api/media/goods/doc/{number_letter}/{number_num}/pb_{number_lower_line}.jpg"
-                if (await _get_image_size(req_url, media_context))[0] >= 800:
-                    result.thumb = req_url
-                    result.poster = req_url.replace("/pb_", "/pf_")
-                    result.thumb_from = "prestige"
-                    result.poster_from = "prestige"
-                    other.poster_big = True
-                    LogBuffer.log().write(f"\n 🖼 HD Thumb found! (prestige)({get_used_time(start_time)}s)")
-                    return result
-
-    # 使用google以图搜图
-    pic_url = result.thumb
-    if HDPicSource.GOOGLE in manager.config.download_hd_pics and pic_url and result.thumb_from != "theporndb":
-        thumb_url, cover_size = await get_big_pic_by_google(
-            pic_url,
-            image_size_getter=media_context.probe_size if media_context is not None else None,
-        )
-        if thumb_url and cover_size[0] > thumb_width:
-            other.thumb_size = cover_size
-            pic_domain = re.findall(r"://([^/]+)", thumb_url)[0]
-            result.thumb_from = f"Google({pic_domain})"
-            result.thumb = thumb_url
-            LogBuffer.log().write(f"\n 🖼 HD Thumb found! ({result.thumb_from})({get_used_time(start_time)}s)")
-
-    return result
-
-
 async def _get_big_poster(
     result: CrawlersResult,
     other: OtherInfo,
     media_context: MediaResourceContext | None = None,
+    *,
+    poster_auto_best: bool = False,
 ):
     start_time = time.time()
 
-    # 未勾选下载高清图poster时，返回
-    if "poster" not in manager.config.download_hd_pics:
-        return
-
-    # 如果有大图时，直接下载
-    if other.poster_big and (await _get_image_size(result.poster, media_context))[1] > 600:
-        result.image_download = True
-        LogBuffer.log().write(f"\n 🖼 HD Poster found! ({result.poster_from})({get_used_time(start_time)}s)")
+    if HDPicSource.AMAZON not in manager.config.download_hd_pics:
         return
 
     # 初始化数据
-    number = result.number
     poster_url = result.poster
     poster_from_before_amazon = result.poster_from
+    image_download_before_amazon = result.image_download
     hd_pic_url = ""
-    poster_width = 0
 
     # 保持原有类型白名单，仅额外排除素人番号
-    if HDPicSource.AMAZON in manager.config.download_hd_pics and result.scraping_type == FixedScrapingType.SUREN:
+    if result.scraping_type == FixedScrapingType.SUREN:
         LogBuffer.log().write("\n 🔎 Amazon搜索：检测为素人番号，已跳过")
-    elif HDPicSource.AMAZON in manager.config.download_hd_pics and _should_search_amazon(result):
+    elif _should_search_amazon(result):
+        if await _should_skip_amazon_for_existing_poster(
+            result,
+            other,
+            poster_auto_best=poster_auto_best,
+            media_context=media_context,
+        ):
+            return result
         originaltitle_amazon_raw = result.originaltitle_amazon
         originaltitle_amazon_replaced = originaltitle_amazon_raw
         series_raw = result.series
@@ -679,65 +690,36 @@ async def _get_big_poster(
         amazon_url = hd_pic_url or (result.poster if result.poster_from == "Amazon" else "")
         amazon_is_hd = bool(hd_pic_url)
         if amazon_url:
-            if is_amazon_hard_match(result) or await _verify_soft_amazon_poster(
+            amazon_match_is_hard = is_amazon_hard_match(result)
+            should_verify_amazon = manager.config.amazon_strict_pic_verify or not amazon_match_is_hard
+            amazon_verify_passed = not should_verify_amazon or await _verify_soft_amazon_poster(
                 amazon_url,
                 thumb_path=other.thumb_path,
                 original_poster_url=poster_url,
                 original_poster_from=poster_from_before_amazon,
                 media_context=media_context,
-            ):
-                result.poster = amazon_url
-                result.poster_from = "Amazon"
-                result.image_download = True
-                hd_pic_url = amazon_url if amazon_is_hd else ""
+                strict=manager.config.amazon_strict_pic_verify,
+            )
+            if amazon_verify_passed:
+                if poster_auto_best:
+                    result.poster = poster_url
+                    result.poster_from = poster_from_before_amazon
+                    result.image_download = image_download_before_amazon
+                    hd_pic_url = amazon_url if amazon_is_hd else ""
+                    if hd_pic_url:
+                        LogBuffer.log().write(f"\n 🖼 HD Poster found! (Amazon)({get_used_time(start_time)}s)")
+                    return PosterCandidate("Amazon", amazon_url, True)
+                else:
+                    result.poster = amazon_url
+                    result.poster_from = "Amazon"
+                    result.image_download = True
+                    hd_pic_url = amazon_url if amazon_is_hd else ""
             else:
                 hd_pic_url = ""
                 if result.poster_from == "Amazon":
                     result.poster = poster_url
                     result.poster_from = poster_from_before_amazon
-
-    # 通过番号去 官网 查询获取稍微大一些的封面图，以便去 Google 搜索
-    if not hd_pic_url and HDPicSource.OFFICIAL in manager.config.download_hd_pics and result.poster_from != "Amazon":
-        letters = result.letters.upper()
-        async with manager.acquire_computed() as computed:
-            official_url = computed.official_websites.get(letters)
-            if official_url:
-                url_search = official_url + "/search/list?keyword=" + number.replace("-", "")
-                html_search, error = await computed.async_client.get_text(url_search)
-            else:
-                html_search = None
-        if official_url and html_search is not None:
-            poster_url_list = re.findall(r'img class="c-main-bg lazyload" data-src="([^"]+)"', html_search)
-            if poster_url_list:
-                # 使用官网图作为封面去 google 搜索
-                poster_url = poster_url_list[0]
-                result.poster = poster_url
-                result.poster_from = official_url.split(".")[-2].replace("https://", "")
-                # vr作品或者官网图片高度大于500时，下载封面图开
-                if "VR" in number.upper() or (await _get_image_size(poster_url, media_context))[1] > 500:
-                    result.image_download = True
-
-    # 使用google以图搜图，放在最后是因为有时有错误，比如 kawd-943
-    poster_url = result.poster
-    if (
-        not hd_pic_url
-        and poster_url
-        and HDPicSource.GOOGLE in manager.config.download_hd_pics
-        and result.poster_from != "theporndb"
-    ):
-        hd_pic_url, poster_size = await get_big_pic_by_google(
-            poster_url,
-            poster=True,
-            image_size_getter=media_context.probe_size if media_context is not None else None,
-        )
-        if hd_pic_url:
-            if "prestige" in result.poster or result.poster_from == "Amazon":
-                poster_width, _ = await _get_image_size(poster_url, media_context)
-            if poster_size[0] > poster_width:
-                result.poster = hd_pic_url
-                other.poster_size = poster_size
-                pic_domain = re.findall(r"://([^/]+)", hd_pic_url)[0]
-                result.poster_from = f"Google({pic_domain})"
+                    result.image_download = image_download_before_amazon
 
     # 如果找到了高清链接，则替换
     if hd_pic_url:
@@ -759,19 +741,25 @@ async def thumb_download(
     poster_path = other.poster_path
     thumb_path = other.thumb_path
     fanart_path = other.fanart_path
+    thumb_policy = resource_policy(
+        DownloadableFile.THUMB,
+        KeepableFile.THUMB,
+        download_files=manager.config.download_files,
+        keep_files=manager.config.keep_files,
+    )
 
     # 本地存在 thumb.jpg，且勾选保留旧文件时，不下载
-    if thumb_path and DownloadableFile.THUMB in manager.config.keep_files:
+    if thumb_path and thumb_policy.should_keep:
         LogBuffer.log().write(f"\n 🍀 Thumb done! (old)({get_used_time(start_time)}s) ")
         return True
 
     # 如果thumb不下载，看fanart、poster要不要下载，都不下载则返回
-    if DownloadableFile.THUMB not in manager.config.download_files:
+    if not thumb_policy.should_download:
         if (
             DownloadableFile.POSTER in manager.config.download_files
-            and (DownloadableFile.POSTER not in manager.config.keep_files or not poster_path)
+            and (KeepableFile.POSTER not in manager.config.keep_files or not poster_path)
             or DownloadableFile.FANART in manager.config.download_files
-            and (DownloadableFile.FANART not in manager.config.keep_files or not fanart_path)
+            and (KeepableFile.FANART not in manager.config.keep_files or not fanart_path)
         ):
             pass
         else:
@@ -790,9 +778,6 @@ async def thumb_download(
             result.thumb_from = "copy cd-thumb"
             other.thumb_path = thumb_final_path
             return True
-
-    # 获取高清背景图
-    await _get_big_thumb(result, other, media_context)
 
     # 下载图片
     cover_url = result.thumb
@@ -823,30 +808,16 @@ async def thumb_download(
             if downloaded:
                 cover_size = await check_pic_async(thumb_final_path_temp)
                 if cover_size:
-                    if (
-                        not cover_from.startswith("Google")
-                        or cover_size == other.thumb_size
-                        or (
-                            cover_size[0] >= 800
-                            and abs(cover_size[0] / cover_size[1] - other.thumb_size[0] / other.thumb_size[1]) <= 0.1
-                        )
-                    ):
-                        # 图片下载正常，替换旧的 thumb.jpg
-                        if thumb_final_path_temp != thumb_final_path:
-                            await move_file_async(thumb_final_path_temp, thumb_final_path)
-                            await delete_file_async(thumb_final_path_temp)
-                        if cd_part:
-                            Flags.file_done_dic[result.number].update({"thumb": thumb_final_path})
-                        other.thumb_marked = False  # 表示还没有走加水印流程
-                        LogBuffer.log().write(f"\n 🍀 Thumb done! ({result.thumb_from})({get_used_time(start_time)}s) ")
-                        other.thumb_path = thumb_final_path
-                        return True
-                    else:
+                    # 图片下载正常，替换旧的 thumb.jpg
+                    if thumb_final_path_temp != thumb_final_path:
+                        await move_file_async(thumb_final_path_temp, thumb_final_path)
                         await delete_file_async(thumb_final_path_temp)
-                        LogBuffer.log().write(
-                            f"\n 🟠 检测到 Thumb 分辨率不对{str(cover_size)}! 已删除 ({cover_from})({get_used_time(start_time)}s)"
-                        )
-                        continue
+                    if cd_part:
+                        Flags.file_done_dic[result.number].update({"thumb": thumb_final_path})
+                    other.thumb_marked = False  # 表示还没有走加水印流程
+                    LogBuffer.log().write(f"\n 🍀 Thumb done! ({result.thumb_from})({get_used_time(start_time)}s) ")
+                    other.thumb_path = thumb_final_path
+                    return True
                 LogBuffer.log().write(f"\n 🟠 Thumb download failed! {cover_from}: {cover_url} ")
     else:
         LogBuffer.log().write("\n 🟠 Thumb url is empty! ")
@@ -871,6 +842,115 @@ async def thumb_download(
             return False
 
 
+def _field_priority_try_all_images_enabled() -> bool:
+    return bool(manager.config.scrape_like == "info" and manager.config.field_priority_try_all_images)
+
+
+def _can_direct_download_poster_candidate(
+    result: CrawlersResult,
+    candidate: PosterCandidate,
+    poster_auto_best: bool,
+) -> bool:
+    if poster_auto_best:
+        return True
+    if result.scraping_type in POSTER_DIRECT_DOWNLOAD_TYPES:
+        return True
+    if result.scraping_type == FixedScrapingType.YOUMA:
+        return candidate.image_download
+    return False
+
+
+async def _build_poster_candidates(
+    result: CrawlersResult,
+    *,
+    poster_auto_best: bool,
+    extra_candidates: list[PosterCandidate] | None = None,
+    media_context: MediaResourceContext | None = None,
+) -> list[PosterCandidate]:
+    candidates = [
+        PosterCandidate(result.poster_from or "poster", result.poster, result.image_download)
+        for _ in [None]
+        if result.poster
+    ]
+    if extra_candidates:
+        candidates.extend(extra_candidates)
+    if _field_priority_try_all_images_enabled():
+        candidates.extend(
+            PosterCandidate(source, url, image_download) for source, url, image_download in result.poster_list if url
+        )
+    candidates = _dedupe_poster_candidates(candidates)
+    candidates = [
+        candidate
+        for candidate in candidates
+        if _can_direct_download_poster_candidate(result, candidate, poster_auto_best)
+    ]
+    if poster_auto_best:
+        sized_candidates = []
+        for candidate in candidates:
+            sized_candidates.append(
+                PosterCandidate(
+                    candidate.source,
+                    candidate.url,
+                    candidate.image_download,
+                    await _get_image_size(candidate.url, media_context),
+                )
+            )
+        candidates = sized_candidates
+    return candidates
+
+
+async def _download_poster_candidate(
+    result: CrawlersResult,
+    other: OtherInfo,
+    candidate: PosterCandidate,
+    *,
+    cd_part: str,
+    folder_new_path: Path,
+    poster_final_path: Path,
+    poster_final_path_temp: Path,
+    media_context: MediaResourceContext | None = None,
+) -> bool:
+    LogBuffer.log().write(f"\n 🖼 Poster策略: 尝试直下 Poster ({candidate.source})")
+    start_time = time.time()
+    if media_context is not None:
+        downloaded = await media_context.save_image(candidate.url, poster_final_path_temp, folder_new_path)
+    else:
+        downloaded = await download_file_with_filepath(candidate.url, poster_final_path_temp, folder_new_path)
+    if not downloaded:
+        LogBuffer.log().write(f"\n 🟠 Poster download failed! {candidate.source}: {candidate.url} ")
+        return False
+
+    poster_size = await check_pic_async(poster_final_path_temp)
+    if not poster_size:
+        LogBuffer.log().write(f"\n 🟠 Poster download failed! {candidate.source}: {candidate.url} ")
+        return False
+
+    if poster_final_path_temp != poster_final_path:
+        await move_file_async(poster_final_path_temp, poster_final_path)
+        await delete_file_async(poster_final_path_temp)
+    if cd_part:
+        Flags.file_done_dic[result.number].update({"poster": poster_final_path})
+    result.poster = candidate.url
+    result.poster_from = candidate.source
+    result.image_download = candidate.image_download or result.image_download
+    other.poster_marked = False  # 下载的图，还没加水印
+    other.poster_path = poster_final_path
+    LogBuffer.log().write(f"\n 🍀 Poster done! ({candidate.source})({get_used_time(start_time)}s)")
+    return True
+
+
+async def _allow_youma_direct_poster_without_auto_best(
+    result: CrawlersResult,
+    other: OtherInfo,
+    media_context: MediaResourceContext | None = None,
+) -> None:
+    if result.scraping_type != FixedScrapingType.YOUMA or result.image_download or not result.poster:
+        return
+    if await _is_existing_poster_better_than_youma_crop(result, other, media_context):
+        result.image_download = True
+        LogBuffer.log().write("\n 🖼 Poster策略: 当前 Poster 不弱于 thumb 右裁剪，允许直下")
+
+
 async def poster_download(
     result: CrawlersResult,
     other: OtherInfo,
@@ -882,22 +962,28 @@ async def poster_download(
     start_time = time.time()
     download_files = manager.config.download_files
     keep_files = manager.config.keep_files
+    poster_policy = resource_policy(
+        DownloadableFile.POSTER,
+        KeepableFile.POSTER,
+        download_files=download_files,
+        keep_files=keep_files,
+    )
     poster_path = other.poster_path
     thumb_path = other.thumb_path
     fanart_path = other.fanart_path
     # 不下载poster、不保留poster时，返回
-    if DownloadableFile.POSTER not in download_files and DownloadableFile.POSTER not in keep_files:
+    if poster_policy.should_remove_existing:
         if poster_path:
             await delete_file_async(poster_path)
         return True
 
     # 本地有poster时，且勾选保留旧文件时，不下载
-    if poster_path and DownloadableFile.POSTER in keep_files:
+    if poster_path and poster_policy.should_keep:
         LogBuffer.log().write(f"\n 🍀 Poster done! (old)({get_used_time(start_time)}s)")
         return True
 
     # 不下载时返回
-    if DownloadableFile.POSTER not in download_files:
+    if not poster_policy.should_download:
         return True
 
     # 尝试复制其他分集。看分集有没有下载，如果下载完成则可以复制，否则就自行下载
@@ -931,61 +1017,77 @@ async def poster_download(
         and DownloadableFile.POSTER_AUTO_BEST in download_files
         and DownloadableFile.IGNORE_YOUMA not in download_files
     )
-    direct_poster_url = result.poster if poster_auto_best else ""
-    direct_poster_from = result.poster_from if poster_auto_best else ""
-    direct_poster_size = await _get_image_size(direct_poster_url, media_context) if direct_poster_url else (0, 0)
+    direct_poster_candidates = []
+    if poster_auto_best and result.poster:
+        direct_poster_candidates.append(
+            PosterCandidate(result.poster_from or "poster", result.poster, result.image_download)
+        )
 
     # 获取高清 poster
-    await _get_big_poster(result, other, media_context)
+    amazon_poster_candidate = await _get_big_poster(result, other, media_context, poster_auto_best=poster_auto_best)
     if _is_vr_result(result) and result.poster:
         result.image_download = True
         if poster_auto_best:
             LogBuffer.log().write("\n 🖼 Poster选优: VR作品保持直下 Poster 策略")
-    elif poster_auto_best:
-        await _select_poster_auto_best(
-            result,
-            other,
-            direct_url=direct_poster_url,
-            direct_from=direct_poster_from,
-            direct_size=direct_poster_size,
-            crop_source_path=fanart_path or thumb_path,
-            media_context=media_context,
-        )
+    if not poster_auto_best:
+        await _allow_youma_direct_poster_without_auto_best(result, other, media_context)
 
     # 下载图片
-    poster_url = result.poster
-    poster_from = result.poster_from
     poster_final_path_temp = poster_final_path
     if await aiofiles.os.path.exists(poster_final_path):
         poster_final_path_temp = poster_final_path.with_suffix(".[DOWNLOAD].jpg")
-    try_direct_poster = bool(poster_url) and _should_try_direct_poster(result, poster_auto_best)
-    if try_direct_poster:
-        LogBuffer.log().write(f"\n 🖼 Poster策略: 尝试直下 Poster ({poster_from})")
-        start_time = time.time()
-        if media_context is not None:
-            downloaded = await media_context.save_image(poster_url, poster_final_path_temp, folder_new_path)
-        else:
-            downloaded = await download_file_with_filepath(poster_url, poster_final_path_temp, folder_new_path)
-        if downloaded:
-            poster_size = await check_pic_async(poster_final_path_temp)
-            if poster_size:
-                if (
-                    not poster_from.startswith("Google")
-                    or poster_size == other.poster_size
-                    or "media-amazon.com" in poster_url
-                ):
-                    if poster_final_path_temp != poster_final_path:
-                        await move_file_async(poster_final_path_temp, poster_final_path)
-                        await delete_file_async(poster_final_path_temp)
-                    if cd_part:
-                        Flags.file_done_dic[result.number].update({"poster": poster_final_path})
-                    other.poster_marked = False  # 下载的图，还没加水印
-                    other.poster_path = poster_final_path
-                    LogBuffer.log().write(f"\n 🍀 Poster done! ({poster_from})({get_used_time(start_time)}s)")
-                    return True
-                else:
-                    await delete_file_async(poster_final_path_temp)
-                    LogBuffer.log().write(f"\n 🟠 检测到 Poster 分辨率不对{str(poster_size)}! 已删除 ({poster_from})")
+
+    poster_candidates = await _build_poster_candidates(
+        result,
+        poster_auto_best=poster_auto_best,
+        extra_candidates=[
+            *direct_poster_candidates,
+            *([amazon_poster_candidate] if isinstance(amazon_poster_candidate, PosterCandidate) else []),
+        ],
+        media_context=media_context,
+    )
+    if poster_auto_best and not _is_vr_result(result):
+        crop_size = await _get_thumb_right_crop_size_from_path(fanart_path or thumb_path)
+        failed_urls: set[str] = set()
+        while poster_candidates:
+            available_candidates = [
+                candidate
+                for candidate in poster_candidates
+                if MediaResourceContext.normalize_url(candidate.url) not in failed_urls
+            ]
+            best_candidate = _select_best_poster_candidate(available_candidates, crop_size)
+            if best_candidate is None:
+                result.image_download = False
+                break
+            result.poster = best_candidate.url
+            result.poster_from = best_candidate.source
+            result.image_download = True
+            if await _download_poster_candidate(
+                result,
+                other,
+                best_candidate,
+                cd_part=cd_part,
+                folder_new_path=folder_new_path,
+                poster_final_path=poster_final_path,
+                poster_final_path_temp=poster_final_path_temp,
+                media_context=media_context,
+            ):
+                return True
+            failed_urls.add(MediaResourceContext.normalize_url(best_candidate.url))
+            LogBuffer.log().write("\n 🖼 Poster选优: 移除失败候选后重新比较")
+    else:
+        for candidate in poster_candidates:
+            if await _download_poster_candidate(
+                result,
+                other,
+                candidate,
+                cd_part=cd_part,
+                folder_new_path=folder_new_path,
+                poster_final_path=poster_final_path,
+                poster_final_path_temp=poster_final_path_temp,
+                media_context=media_context,
+            ):
+                return True
 
     # 判断之前有没有 poster 和 thumb
     if not poster_path and not thumb_path:
@@ -1051,20 +1153,26 @@ async def fanart_download(
     fanart_path = other.fanart_path
     download_files = manager.config.download_files
     keep_files = manager.config.keep_files
+    fanart_policy = resource_policy(
+        DownloadableFile.FANART,
+        KeepableFile.FANART,
+        download_files=download_files,
+        keep_files=keep_files,
+    )
 
     # 不保留不下载时删除返回
-    if DownloadableFile.FANART not in keep_files and DownloadableFile.FANART not in download_files:
+    if fanart_policy.should_remove_existing:
         if fanart_path and await aiofiles.os.path.exists(fanart_path):
             await delete_file_async(fanart_path)
         return True
 
     # 保留，并且本地存在 fanart.jpg，不下载返回
-    if DownloadableFile.FANART in keep_files and fanart_path:
+    if fanart_policy.should_keep and fanart_path:
         LogBuffer.log().write(f"\n 🍀 Fanart done! (old)({get_used_time(start_time)}s)")
         return True
 
     # 不下载时，返回
-    if DownloadableFile.FANART not in download_files:
+    if not fanart_policy.should_download:
         return True
 
     # 尝试复制其他分集。看分集有没有下载，如果下载完成则可以复制，否则就自行下载
@@ -1119,22 +1227,28 @@ async def extrafanart_download(extrafanart: list[str], extrafanart_from: str, fo
     start_time = time.time()
     download_files = manager.config.download_files
     keep_files = manager.config.keep_files
+    extrafanart_policy = resource_policy(
+        DownloadableFile.EXTRAFANART,
+        KeepableFile.EXTRAFANART,
+        download_files=download_files,
+        keep_files=keep_files,
+    )
     extrafanart_list = extrafanart
     extrafanart_folder_path = folder_new_path / "extrafanart"
 
     # 不下载不保留时删除返回
-    if DownloadableFile.EXTRAFANART not in download_files and DownloadableFile.EXTRAFANART not in keep_files:
+    if extrafanart_policy.should_remove_existing:
         if await aiofiles.os.path.exists(extrafanart_folder_path):
             await to_thread(shutil.rmtree, extrafanart_folder_path, ignore_errors=True)
         return
 
     # 本地存在 extrafanart_folder，且勾选保留旧文件时，不下载
-    if DownloadableFile.EXTRAFANART in keep_files and await aiofiles.os.path.exists(extrafanart_folder_path):
+    if extrafanart_policy.should_keep and await aiofiles.os.path.exists(extrafanart_folder_path):
         LogBuffer.log().write(f"\n 🍀 Extrafanart done! (old)({get_used_time(start_time)}s) ")
         return True
 
     # 如果 extrafanart 不下载
-    if DownloadableFile.EXTRAFANART not in download_files:
+    if not extrafanart_policy.should_download:
         return True
 
     if extrafanart_list:

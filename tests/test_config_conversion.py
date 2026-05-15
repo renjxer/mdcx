@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 
-from mdcx.config.enums import DownloadableFile, FixedScrapingType, Website
+from mdcx.config.enums import DownloadableFile, FixedScrapingType, HDPicSource, KeepableFile, Website
 from mdcx.config.models import DEFAULT_FIELD_SITE_PRIORITY, Config
+from mdcx.config.resource_policy import resource_policy
 from mdcx.config.v1 import ConfigV1
 from mdcx.controllers.main_window.site_priority_dialog import (
     FIELD_PRIORITY_FIELDS,
@@ -57,6 +58,38 @@ def generate_random_config() -> Config:
     # assert dict_fields_all_different(d, default), "生成的随机配置中存在与默认值相同的字段: " + ", ".join(errors)
 
     return Config.model_validate(d)
+
+
+def test_config_default_keep_files_match_default_template():
+    data = json.loads(Path("resources/config/default_config.json").read_text(encoding="utf-8"))
+    Config.update(data)
+    template_config = Config.model_validate(data)
+
+    assert Config().keep_files == template_config.keep_files == [KeepableFile.TRAILER, KeepableFile.THEME_VIDEOS]
+
+
+def test_resource_policy_exposes_download_and_keep_semantics():
+    policy = resource_policy(
+        DownloadableFile.POSTER,
+        KeepableFile.POSTER,
+        download_files=[DownloadableFile.POSTER],
+        keep_files=[],
+    )
+
+    assert policy.should_download is True
+    assert policy.should_keep is False
+    assert policy.should_remove_existing is False
+
+    remove_policy = resource_policy(
+        DownloadableFile.POSTER,
+        KeepableFile.POSTER,
+        download_files=[],
+        keep_files=[],
+    )
+
+    assert remove_policy.should_download is False
+    assert remove_policy.should_keep is False
+    assert remove_policy.should_remove_existing is True
 
 
 def test_from_legacy():
@@ -156,6 +189,40 @@ def test_config_default_site_priorities_follow_current_frontend_defaults():
     ]
 
 
+def test_removed_hd_pic_sources_are_filtered_from_old_config():
+    data = {
+        "download_hd_pics": [
+            "poster",
+            "thumb",
+            "amazon",
+            "official",
+            "google",
+            "goo_only",
+        ],
+        "google_used": ["m.media-amazon.com"],
+        "google_exclude": ["fake"],
+        "config_version": 1,
+    }
+
+    Config.update(data)
+    config = Config.model_validate(data)
+
+    assert config.download_hd_pics == [HDPicSource.AMAZON]
+    assert config.config_version == 2
+    assert "google_used" not in data
+    assert "google_exclude" not in data
+
+
+def test_old_config_gets_default_amazon_strict_pic_verify():
+    data = {"config_version": 1}
+
+    Config.update(data)
+    config = Config.model_validate(data)
+
+    assert config.amazon_strict_pic_verify is False
+    assert config.field_priority_try_all_images is False
+
+
 def test_frontend_field_priority_fields_include_legacy_configurable_fields():
     assert CrawlerResultFields.ORIGINALTITLE in FIELD_PRIORITY_FIELDS
     assert CrawlerResultFields.ORIGINALPLOT in FIELD_PRIORITY_FIELDS
@@ -179,7 +246,45 @@ def test_default_config_template_is_valid_json_and_matches_current_model():
     assert config.media_path == "D:\\Media\\Input"
     assert config.softlink_path == "X:\\Media\\Softlink"
     assert config.failed_output_folder == "D:\\Media\\Input\\failed"
+    assert config.amazon_strict_pic_verify is False
+    assert config.field_priority_try_all_images is False
     assert config.website_youma == Config().website_youma
     assert config.get_field_config(CrawlerResultFields.TITLE).site_prority == DEFAULT_FIELD_SITE_PRIORITY
     for field in CrawlerResultFields:
         assert config.get_field_config(field) == Config().get_field_config(field)
+
+
+def test_builtin_naming_templates_are_migrated_to_jinja2_syntax():
+    data = {
+        "folder_name": "letters/number",
+        "naming_file": "number",
+        "naming_media": "[number]title",
+        "update_a_folder": "actor",
+        "update_b_folder": "number actor",
+        "update_c_filetemplate": "number",
+        "update_d_folder": "number actor",
+        "update_titletemplate": "number title",
+    }
+
+    Config.update(data)
+
+    assert data["folder_name"] == "{{ letters }}/{{ number }}"
+    assert data["naming_file"] == "{{ number }}"
+    assert data["naming_media"] == "[{{ number }}]{% if title and title != number %}{{ title }}{% endif %}"
+    assert data["update_a_folder"] == "{{ actor }}"
+    assert data["update_b_folder"] == "{{ number }} {{ actor }}"
+    assert data["update_c_filetemplate"] == "{{ number }}"
+    assert data["update_d_folder"] == "{{ number }} {{ actor }}"
+    assert data["update_titletemplate"] == "{{ number }} {{ title }}"
+    Config.model_validate(data)
+
+
+def test_braced_naming_templates_are_migrated_to_jinja2_syntax():
+    data = {
+        "naming_file": "{number}{?studio: [{studio}]} {definition}",
+    }
+
+    Config.update(data)
+
+    assert data["naming_file"] == "{{ number }}{% if studio %} [{{ studio }}]{% endif %} {{ definition }}"
+    Config.model_validate(data)

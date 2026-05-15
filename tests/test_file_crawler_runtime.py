@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mdcx.config.enums import FixedScrapingType, Website
+from mdcx.config.enums import FixedScrapingType, Language, Website
 from mdcx.config.models import Config, FieldConfig, FieldPriorityConfig
 from mdcx.core.file_crawler import (
     FileScraper,
@@ -14,6 +14,7 @@ from mdcx.core.file_crawler import (
 from mdcx.core.translate import AVWIKI_SCRAPING_TYPES, _should_query_avwiki_actor
 from mdcx.gen.field_enums import CrawlerResultFields
 from mdcx.manual import ManualConfig
+from mdcx.models.enums import FileMode
 from mdcx.models.log_buffer import LogBuffer
 from mdcx.models.types import CrawlerDebugInfo, CrawlerInput, CrawlerResponse, CrawlerResult, CrawlersResult, CrawlTask
 
@@ -72,6 +73,35 @@ class _RecordingCrawlerProvider:
         return self._website_crawlers[site]
 
 
+class _ResultRecordingCrawler:
+    def __init__(
+        self,
+        site: Website,
+        records: list[Website],
+        data: CrawlerResult | None,
+        error: Exception | None = None,
+    ):
+        self._site = site
+        self._records = records
+        self._data = data
+        self._error = error
+
+    async def run(self, task_input: CrawlerInput) -> CrawlerResponse:
+        self._records.append(self._site)
+        return CrawlerResponse(
+            debug_info=CrawlerDebugInfo(execution_time=0.01, error=self._error),
+            data=self._data,
+        )
+
+
+class _ResultRecordingCrawlerProvider:
+    def __init__(self, crawlers: dict[Website, _ResultRecordingCrawler]):
+        self._website_crawlers = crawlers
+
+    async def get(self, site: Website):
+        return self._website_crawlers[site]
+
+
 class _FakeConfig:
     def get_field_config(self, field: CrawlerResultFields) -> FieldConfig:
         if field in (CrawlerResultFields.RUNTIME, CrawlerResultFields.RELEASE, CrawlerResultFields.YEAR):
@@ -85,6 +115,23 @@ class _TypePriorityConfig(_FakeConfig):
     ) -> FieldPriorityConfig:
         if scraping_type == FixedScrapingType.YOUMA and field == CrawlerResultFields.RUNTIME:
             return FieldPriorityConfig(site_prority=[Website.JAVDB, Website.AVBASE])
+        return FieldPriorityConfig()
+
+
+class _ImagePriorityConfig(_FakeConfig):
+    scrape_like = "info"
+    field_priority_try_all_images = True
+
+    def get_field_config(self, field: CrawlerResultFields) -> FieldConfig:
+        if field in (CrawlerResultFields.POSTER, CrawlerResultFields.THUMB):
+            return FieldConfig(site_prority=[Website.AVBASE, Website.JAVDB])
+        return FieldConfig(site_prority=[])
+
+    def get_type_field_config(
+        self, scraping_type: FixedScrapingType, field: CrawlerResultFields
+    ) -> FieldPriorityConfig:
+        if field in (CrawlerResultFields.POSTER, CrawlerResultFields.THUMB):
+            return FieldPriorityConfig(site_prority=[Website.AVBASE, Website.JAVDB])
         return FieldPriorityConfig()
 
 
@@ -102,9 +149,18 @@ def _build_result(site: Website, runtime: str = "", release: str = "", year: str
     result = CrawlerResult.empty()
     result.source = site.value
     result.external_id = f"{site.value}:id"
+    result.title = f"{site.value} title"
     result.runtime = runtime
     result.release = release
     result.year = year
+    return result
+
+
+def _build_image_result(site: Website, poster: str = "", thumb: str = "", image_download: bool = True) -> CrawlerResult:
+    result = _build_result(site)
+    result.poster = poster
+    result.thumb = thumb
+    result.image_download = image_download
     return result
 
 
@@ -242,6 +298,26 @@ def test_avwiki_uses_unified_scraping_types():
 
 
 @pytest.mark.parametrize(
+    ("website", "expected_language", "expected_org_language"),
+    [
+        (Website.AIRAV_CC, Language.ZH_CN, Language.ZH_CN),
+        (Website.IQQTV, Language.ZH_CN, Language.ZH_CN),
+        (Website.JAVLIBRARY, Language.ZH_CN, Language.ZH_CN),
+        (Website.MDTV, Language.ZH_CN, Language.ZH_CN),
+        (Website.DMM, Language.JP, Language.ZH_CN),
+    ],
+)
+def test_specific_crawler_language_uses_website_enum_members(
+    website: Website, expected_language: Language, expected_org_language: Language
+):
+    config = Config()
+    config.set_field_language(CrawlerResultFields.TITLE, Language.ZH_CN)
+    scraper = FileScraper(config, _FakeCrawlerProvider({}))
+
+    assert scraper._get_specific_crawler_language(website) == (expected_language, expected_org_language)
+
+
+@pytest.mark.parametrize(
     ("scraping_type", "actors", "expected"),
     [
         (FixedScrapingType.YOUMA, [], True),
@@ -350,6 +426,95 @@ async def test_call_crawlers_legacy_site_list_uses_global_field_priority(monkeyp
     assert result is not None
     assert result.runtime == "55"
     assert result.field_sources[CrawlerResultFields.RUNTIME] == Website.JAVDB.value
+
+
+@pytest.mark.asyncio
+async def test_call_crawlers_collects_all_image_candidates_when_enabled(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(ManualConfig, "REDUCED_FIELDS", (CrawlerResultFields.POSTER, CrawlerResultFields.THUMB))
+
+    provider = _FakeCrawlerProvider(
+        {
+            Website.AVBASE: _build_image_result(
+                Website.AVBASE,
+                poster="https://example.test/avbase-poster.jpg",
+                thumb="https://example.test/avbase-thumb.jpg",
+                image_download=False,
+            ),
+            Website.JAVDB: _build_image_result(
+                Website.JAVDB,
+                poster="https://example.test/javdb-poster.jpg",
+                thumb="https://example.test/javdb-thumb.jpg",
+                image_download=True,
+            ),
+        }
+    )
+    scraper = FileScraper(_ImagePriorityConfig(), provider)
+    task_input = CrawlerInput.empty()
+    task_input.number = "SCUTE-1354"
+
+    result = await scraper._call_crawlers(
+        task_input,
+        classification=classify_scrape_task(task_input, Config(website_youma=[Website.AVBASE, Website.JAVDB])),
+    )
+
+    assert result is not None
+    assert result.poster == "https://example.test/avbase-poster.jpg"
+    assert result.poster_from == Website.AVBASE.value
+    assert result.poster_list == [
+        (Website.AVBASE.value, "https://example.test/avbase-poster.jpg", False),
+        (Website.JAVDB.value, "https://example.test/javdb-poster.jpg", True),
+    ]
+    assert result.thumb_list == [
+        (Website.AVBASE.value, "https://example.test/avbase-thumb.jpg"),
+        (Website.JAVDB.value, "https://example.test/javdb-thumb.jpg"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_speed_mode_uses_first_successful_type_site_without_field_merge():
+    records: list[Website] = []
+    provider = _ResultRecordingCrawlerProvider(
+        {
+            Website.AVBASE: _ResultRecordingCrawler(
+                Website.AVBASE, records, _build_result(Website.AVBASE, runtime="120")
+            ),
+            Website.JAVDB: _ResultRecordingCrawler(Website.JAVDB, records, _build_result(Website.JAVDB, runtime="55")),
+        }
+    )
+    config = Config(scrape_like="speed", website_youma=[Website.AVBASE, Website.JAVDB])
+    config.set_field_sites(CrawlerResultFields.RUNTIME, [Website.JAVDB, Website.AVBASE])
+    scraper = FileScraper(config, provider)
+    task_input = CrawlTask.empty()
+    task_input.number = "SCUTE-1354"
+
+    result = await scraper.run(task_input, FileMode.Default)
+
+    assert result is not None
+    assert result.runtime == "120"
+    assert result.field_sources[CrawlerResultFields.TITLE] == Website.AVBASE.value
+    assert records == [Website.AVBASE]
+
+
+@pytest.mark.asyncio
+async def test_speed_mode_falls_back_to_next_site_after_empty_result():
+    records: list[Website] = []
+    provider = _ResultRecordingCrawlerProvider(
+        {
+            Website.AVBASE: _ResultRecordingCrawler(Website.AVBASE, records, None),
+            Website.JAVDB: _ResultRecordingCrawler(Website.JAVDB, records, _build_result(Website.JAVDB, runtime="55")),
+        }
+    )
+    config = Config(scrape_like="speed", website_youma=[Website.AVBASE, Website.JAVDB])
+    scraper = FileScraper(config, provider)
+    task_input = CrawlTask.empty()
+    task_input.number = "SCUTE-1354"
+
+    result = await scraper.run(task_input, FileMode.Default)
+
+    assert result is not None
+    assert result.runtime == "55"
+    assert result.field_sources[CrawlerResultFields.TITLE] == Website.JAVDB.value
+    assert records == [Website.AVBASE, Website.JAVDB]
 
 
 @pytest.mark.asyncio

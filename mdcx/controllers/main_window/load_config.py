@@ -206,6 +206,8 @@ def load_config(self: "MyMAinWindow"):
             (self.Ui.radioButton_scrape_info, "info"),
             default=self.Ui.radioButton_scrape_info,
         )
+        self.Ui.checkBox_field_priority_try_all_images.setChecked(manager.config.field_priority_try_all_images)
+        self.update_field_priority_try_all_images_state()
 
         # 标题字段配置
         title_field_config = manager.config.get_field_config(CrawlerResultFields.TITLE)
@@ -579,24 +581,10 @@ def load_config(self: "MyMAinWindow"):
         download_hd_pics = manager.config.download_hd_pics
         set_checkboxes(
             download_hd_pics,
-            (self.Ui.checkBox_hd_poster, HDPicSource.POSTER),
-            (self.Ui.checkBox_hd_thumb, HDPicSource.THUMB),
             (self.Ui.checkBox_amazon_big_pic, HDPicSource.AMAZON),
-            (self.Ui.checkBox_official_big_pic, HDPicSource.OFFICIAL),
-            (self.Ui.checkBox_google_big_pic, HDPicSource.GOOGLE),
         )
-        set_radio_buttons(
-            "only" if HDPicSource.GOO_ONLY in download_hd_pics else "first",
-            (self.Ui.radioButton_google_only, "only"),
-            (self.Ui.radioButton_google_first, "first"),
-            default=self.Ui.radioButton_google_first,
-        )
-        # endregion
-
-        # Google下载词
-        self.Ui.lineEdit_google_used.setText(",".join(manager.config.google_used))
-        # Google过滤词
-        self.Ui.lineEdit_google_exclude.setText(",".join(manager.config.google_exclude))
+        self.Ui.checkBox_amazon_strict_pic_verify.setChecked(manager.config.amazon_strict_pic_verify)
+        self.update_amazon_strict_pic_verify_state()
         # endregion
 
         # region Name_Rule
@@ -1101,10 +1089,11 @@ def load_config(self: "MyMAinWindow"):
                 scrape_like_text += " · 软连接开"
             elif manager.config.soft_link == 2:
                 scrape_like_text += " · 硬连接开"
+            movie_path_text = ";".join(str(path) for path in get_movie_path_setting().movie_paths)
             signal_qt.show_log_text(
                 f" 🛠 当前配置：{manager.path} 加载完成！\n "
                 f"📂 程序目录：{manager.data_folder} \n "
-                f"📂 刮削目录：{get_movie_path_setting().movie_path} \n "
+                f"📂 刮削目录：{movie_path_text} \n "
                 f"💠 刮削模式：{Flags.main_mode_text} · {scrape_like_text} \n "
                 f"🖥️ 系统信息：{platform.platform()} \n "
                 f"🐰 软件版本：{self.localversion} \n"
@@ -1120,7 +1109,8 @@ def load_config(self: "MyMAinWindow"):
         self.activateWindow()
         try:
             # 主界面右上角显示提示信息
-            self.set_label_file_path.emit(f"🎈 当前刮削路径: \n {get_movie_path_setting().movie_path}")
+            movie_path_text = ";".join(str(path) for path in get_movie_path_setting().movie_paths)
+            self.set_label_file_path.emit(f"🎈 当前刮削路径: \n {movie_path_text}")
         except Exception:
             signal_qt.show_traceback_log(traceback.format_exc())
     else:  # ini不存在，重新创建

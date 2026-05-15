@@ -21,8 +21,8 @@ from ..base.file import (
     save_success_list,
 )
 from ..base.image import extrafanart_copy2, extrafanart_extras_copy
-from ..config.enums import DownloadableFile, EmbyAction, FixedScrapingType, ReadMode, Switch
-from ..config.extend import get_movie_path_setting
+from ..config.enums import DownloadableFile, EmbyAction, FixedScrapingType, KeepableFile, ReadMode, Switch
+from ..config.extend import get_movie_path_setting, parse_media_paths
 from ..config.manager import manager
 from ..config.resources import resources
 from ..crawler import CrawlerProvider
@@ -36,7 +36,7 @@ from ..tools.emby_actor_info import creat_kodi_actors
 from ..utils import executor, get_current_time, get_real_time, get_used_time, split_path
 from ..utils.dataclass import update
 from ..utils.file import copy_file_async, move_file_async
-from ..utils.path import is_descendant
+from ..utils.path import is_any_descendant
 from .file import creat_folder, deal_old_files, get_file_info_v2, get_output_name, move_movie
 from .file_crawler import FileScraper, classify_existing_scrape_result, classify_scrape_task
 from .image import add_mark
@@ -178,18 +178,25 @@ class Scraper:
         # 获取设置的媒体目录、失败目录、成功目录
         path_settings = get_movie_path_setting()
         movie_path = path_settings.movie_path
-        ignore_dirs = path_settings.ignore_dirs
-        softlink_path = path_settings.softlink_path
+        movie_paths = path_settings.movie_paths
 
         # 获取待刮削文件列表的相关信息
         if not movie_list:
-            if manager.config.scrape_softlink_path:
-                await newtdisk_creat_symlink(
-                    Switch.COPY_NETDISK_NFO in manager.config.switch_on, movie_path, softlink_path
-                )
-                movie_path = softlink_path
             signal.show_log_text("\n ⏰ Start time: " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-            movie_list = await get_movie_list(file_mode, movie_path, ignore_dirs)
+            movie_list = []
+            scan_movie_paths = movie_paths if file_mode == FileMode.Default else [movie_path]
+            for media_path in scan_movie_paths:
+                current_paths = get_movie_path_setting(movie_path_override=media_path)
+                scan_path = current_paths.movie_path
+                scan_ignore_dirs = current_paths.ignore_dirs
+                if manager.config.scrape_softlink_path:
+                    await newtdisk_creat_symlink(
+                        Switch.COPY_NETDISK_NFO in manager.config.switch_on,
+                        current_paths.movie_path,
+                        current_paths.softlink_path,
+                    )
+                    scan_path = current_paths.softlink_path
+                movie_list.extend(await get_movie_list(file_mode, scan_path, scan_ignore_dirs))
         else:
             signal.show_log_text("\n ⏰ Start time: " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
         Flags.remain_list = movie_list.copy()
@@ -229,7 +236,12 @@ class Scraper:
                 return
 
         signal.show_log_text("================================================================================")
-        await _clean_empty_fodlers(movie_path, file_mode)
+        for media_path in movie_paths:
+            current_paths = (
+                path_settings if media_path == movie_path else get_movie_path_setting(movie_path_override=media_path)
+            )
+            clean_path = current_paths.softlink_path if manager.config.scrape_softlink_path else media_path
+            await _clean_empty_fodlers(clean_path, file_mode)
         end_time = time.time()
         used_time = str(round((end_time - Flags.start_time), 2))
         average_time = str(round((end_time - Flags.start_time) / task_count, 2)) if task_count else used_time
@@ -512,6 +524,18 @@ class Scraper:
     async def _process_one_file(
         self, file_info: FileInfo, file_mode: FileMode
     ) -> tuple[CrawlersResult | None, OtherInfo | None]:
+        media_context = MediaResourceContext()
+        try:
+            return await self._process_one_file_with_context(file_info, file_mode, media_context)
+        finally:
+            media_context.close()
+
+    async def _process_one_file_with_context(
+        self,
+        file_info: FileInfo,
+        file_mode: FileMode,
+        media_context: MediaResourceContext,
+    ) -> tuple[CrawlersResult | None, OtherInfo | None]:
         # 处理单个文件刮削
         # 初始化所需变量
         start_time = time.time()
@@ -578,7 +602,7 @@ class Scraper:
             if DownloadableFile.NFO not in manager.config.download_files:
                 # [下载]处不勾选下载nfo时
                 update_nfo = False
-            if DownloadableFile.NFO in manager.config.keep_files and is_nfo_existed:
+            if KeepableFile.NFO in manager.config.keep_files and is_nfo_existed:
                 # [下载]处勾选保留nfo且nfo存在时
                 update_nfo = False
         elif manager.config.main_mode == 4:
@@ -653,8 +677,10 @@ class Scraper:
             # ========================= call crawlers =========================
             # res = await crawl(file_info.crawl_task(), file_mode)
 
+            crawl_task = file_info.crawl_task()
+            crawl_task.media_context = media_context
             scraper = FileScraper(manager.config, self.crawler_provider)
-            res = await scraper.run(file_info.crawl_task(), file_mode)
+            res = await scraper.run(crawl_task, file_mode)
             if res is None:
                 return None, None
             # 处理 FileInfo 和 CrawlersResult 的共同字段, 即 number/mosaic/letters
@@ -793,23 +819,19 @@ class Scraper:
         # 如果 final_pic_path 没处理过，这时才需要下载和加水印
         if pic_final_catched and file_can_download:
             # 下载thumb
-            media_context = MediaResourceContext()
-            try:
-                if not await thumb_download(
-                    res, other, file_info.cd_part, folder_new_path, thumb_final_path, media_context
-                ):
-                    return None, None
+            if not await thumb_download(
+                res, other, file_info.cd_part, folder_new_path, thumb_final_path, media_context
+            ):
+                return None, None
 
-                # 下载艺术图
-                await fanart_download(res.number, other, file_info.cd_part, fanart_final_path)
+            # 下载艺术图
+            await fanart_download(res.number, other, file_info.cd_part, fanart_final_path)
 
-                # 下载poster
-                if not await poster_download(
-                    res, other, file_info.cd_part, folder_new_path, poster_final_path, media_context
-                ):
-                    return None, None
-            finally:
-                media_context.close()
+            # 下载poster
+            if not await poster_download(
+                res, other, file_info.cd_part, folder_new_path, poster_final_path, media_context
+            ):
+                return None, None
 
             # 清理冗余图片
             await pic_some_deal(res.number, thumb_final_path, fanart_final_path)
@@ -823,10 +845,11 @@ class Scraper:
                 await extrafanart_copy2(folder_new_path)
                 await extrafanart_extras_copy(folder_new_path)
 
-            # 下载trailer、复制主题视频
-            # 因为 trailer也有带文件名，不带文件名两种情况，不能使用pic_final_catched。比如图片不带文件名，trailer带文件名这种场景需要支持每个分集去下载trailer
+        if file_can_download:
+            # trailer 有带文件名、不带文件名两种命名方式，不能依赖图片处理权。
             await trailer_download(res, folder_new_path, folder_old_path, naming_rule)
-            await copy_trailer_to_theme_videos(folder_new_path, naming_rule)
+            if single_folder_catched:
+                await copy_trailer_to_theme_videos(folder_new_path, naming_rule)
 
         # 生成nfo文件
         await write_nfo(file_info, res, nfo_new_path, folder_new_path, update_nfo)
@@ -930,17 +953,14 @@ def get_remain_list() -> bool:
         signal.show_log_text("🍯 🍯 🍯 NOTE: 已取消本次刮削启动。")
         return True  # 不刮削（包括点取消、ESC、右上角关闭）
 
-    movie_path = manager.config.media_path
-    if movie_path == "":
-        movie_path = manager.data_folder
-    movie_path = Path(movie_path)
+    movie_paths = parse_media_paths()
 
     p = Flags.remain_list[0]
-    if not is_descendant(p, movie_path):
+    if not is_any_descendant(p, *movie_paths):
         box = QMessageBox(
             QMessageBox.Icon.Warning,
             "提醒",
-            f"很重要！！请注意：\n当前待刮削目录：{movie_path}\n剩余任务文件路径：{p.resolve()}\n"
+            f"很重要！！请注意：\n当前待刮削目录：{';'.join(str(path) for path in movie_paths)}\n剩余任务文件路径：{p.resolve()}\n"
             "文件不在当前待刮削目录中, 可能是使用其他配置扫描的！\n"
             "请确认成功输出目录和失败目录是否正确！如果配置不正确，继续刮削可能会导致文件被移动到新配置的输出位置！\n是否继续刮削？",
         )
